@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fruits Island — Chapter One: The First Slice</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    -webkit-user-select: none; user-select: none;
+    background: #0b0d18; overflow: hidden;
+    font-family: monospace;
+  }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 45%, #18283a 0%, #0b0d18 70%);
+  }
+  #game {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 0 0 1px #1d3145, 0 18px 60px rgba(0,0,0,.75);
+    background: #000;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="384" height="216"></canvas></div>
+<!--
+  FRUITS ISLAND — Chapter One ("The First Slice")
+  Single directory, zero dependencies, fully offline: open this file in any
+  modern desktop browser. All art is generated at runtime (pixel strings +
+  procedural painters), all audio is synthesized with WebAudio.
+
+  Script order matters (top-level consts are shared between classic scripts):
+  core -> audio -> sprites -> props -> items -> dialogue -> npcs -> world ->
+  combat -> ui -> game. See docs/TECH_NOTES.md for the full architecture.
+
+  LOCKED STORYLINE: docs/STORYLINE.md is the single source of truth.
+-->
+<script src="js/core.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/sprites.js"></script>
+<script src="js/props.js"></script>
+<script src="js/items.js"></script>
+<script src="js/dialogue.js"></script>
+<script src="js/npcs.js"></script>
+<script src="js/world.js"></script>
+<script src="js/combat.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
