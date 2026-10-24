@@ -1,0 +1,3345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fruits Island</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    -webkit-user-select: none; user-select: none;
+    background: #0b0d18; overflow: hidden;
+    font-family: monospace;
+  }
+  #wrap {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 45%, #18283a 0%, #0b0d18 70%);
+  }
+  #game {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 0 0 1px #1d3145, 0 18px 60px rgba(0,0,0,.75);
+    background: #000;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="384" height="216"></canvas></div>
+<script>
+"use strict";
+/* ============================================================================
+   FRUITS ISLAND  —  a small handcrafted RPG prototype
+   Single-file HTML5 game. No external assets: every sprite is drawn here as
+   pixel-art data and pre-rendered to offscreen canvases at load time.
+   Sections:
+     1. Utils / RNG / math
+     2. Pixel font
+     3. Sprite data + sprite factory (player, Vax, foliage, props, portrait)
+     4. Audio (WebAudio synth: waves, wind, birds, sfx, music cues)
+     5. World: map data, decoration, draw order, collision
+     6. Game state, player, NPCs, interactions
+     7. Dialogue engine + Vax's script
+     8. UI (dialogue box, choices, objective, prompts, title, pause)
+     9. Main loop + testing hooks
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- 1. UTILS */
+const VW = 384, VH = 216, TILE = 16;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const approach = (v, t, s) => v < t ? Math.min(t, v + s) : Math.max(t, v - s);
+
+// deterministic RNG so the island looks identical every run
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  x.imageSmoothingEnabled = false;
+  return { c, x };
+}
+
+/* ------------------------------------------------------------ 2. PIXEL FONT */
+// 5x7 bitmap font, one string per glyph row. Indexed by character.
+const FONT_SRC = {
+  'A':'01110|10001|10001|11111|10001|10001|10001',
+  'B':'11110|10001|10001|11110|10001|10001|11110',
+  'C':'01110|10001|10000|10000|10000|10001|01110',
+  'D':'11110|10001|10001|10001|10001|10001|11110',
+  'E':'11111|10000|10000|11110|10000|10000|11111',
+  'F':'11111|10000|10000|11110|10000|10000|10000',
+  'G':'01110|10001|10000|10111|10001|10001|01111',
+  'H':'10001|10001|10001|11111|10001|10001|10001',
+  'I':'11111|00100|00100|00100|00100|00100|11111',
+  'J':'00111|00010|00010|00010|00010|10010|01100',
+  'K':'10001|10010|10100|11000|10100|10010|10001',
+  'L':'10000|10000|10000|10000|10000|10000|11111',
+  'M':'10001|11011|10101|10101|10001|10001|10001',
+  'N':'10001|11001|10101|10011|10001|10001|10001',
+  'O':'01110|10001|10001|10001|10001|10001|01110',
+  'P':'11110|10001|10001|11110|10000|10000|10000',
+  'Q':'01110|10001|10001|10001|10101|10010|01101',
+  'R':'11110|10001|10001|11110|10100|10010|10001',
+  'S':'01111|10000|10000|01110|00001|00001|11110',
+  'T':'11111|00100|00100|00100|00100|00100|00100',
+  'U':'10001|10001|10001|10001|10001|10001|01110',
+  'V':'10001|10001|10001|10001|10001|01010|00100',
+  'W':'10001|10001|10001|10101|10101|11011|10001',
+  'X':'10001|10001|01010|00100|01010|10001|10001',
+  'Y':'10001|10001|01010|00100|00100|00100|00100',
+  'Z':'11111|00001|00010|00100|01000|10000|11111',
+  '0':'01110|10001|10011|10101|11001|10001|01110',
+  '1':'00100|01100|00100|00100|00100|00100|01110',
+  '2':'01110|10001|00001|00110|01000|10000|11111',
+  '3':'11111|00010|00100|00010|00001|10001|01110',
+  '4':'00010|00110|01010|10010|11111|00010|00010',
+  '5':'11111|10000|11110|00001|00001|10001|01110',
+  '6':'00110|01000|10000|11110|10001|10001|01110',
+  '7':'11111|00001|00010|00100|01000|01000|01000',
+  '8':'01110|10001|10001|01110|10001|10001|01110',
+  '9':'01110|10001|10001|01111|00001|00010|01100',
+  'a':'00000|00000|01110|00001|01111|10001|01111',
+  'b':'10000|10000|11110|10001|10001|10001|11110',
+  'c':'00000|00000|01111|10000|10000|10000|01111',
+  'd':'00001|00001|01111|10001|10001|10001|01111',
+  'e':'00000|00000|01110|10001|11111|10000|01110',
+  'f':'00110|01001|01000|11100|01000|01000|01000',
+  'g':'00000|01111|10001|10001|01111|00001|01110',
+  'h':'10000|10000|11110|10001|10001|10001|10001',
+  'i':'00100|00000|01100|00100|00100|00100|01110',
+  'j':'00010|00000|00110|00010|00010|10010|01100',
+  'k':'10000|10000|10010|10100|11000|10100|10010',
+  'l':'01100|00100|00100|00100|00100|00100|01110',
+  'm':'00000|00000|11110|10101|10101|10101|10101',
+  'n':'00000|00000|11110|10001|10001|10001|10001',
+  'o':'00000|00000|01110|10001|10001|10001|01110',
+  'p':'00000|00000|11110|10001|10001|11110|10000',
+  'q':'00000|00000|01111|10001|10001|01111|00001',
+  'r':'00000|00000|10110|11001|10000|10000|10000',
+  's':'00000|00000|01111|10000|01110|00001|11110',
+  't':'01000|01000|11100|01000|01000|01001|00110',
+  'u':'00000|00000|10001|10001|10001|10011|01101',
+  'v':'00000|00000|10001|10001|10001|01010|00100',
+  'w':'00000|00000|10001|10001|10101|10101|01010',
+  'x':'00000|00000|10001|01010|00100|01010|10001',
+  'y':'00000|00000|10001|10001|01101|00001|01110',
+  'z':'00000|00000|11111|00010|00100|01000|11111',
+  ' ':'00000|00000|00000|00000|00000|00000|00000',
+  '.':'00000|00000|00000|00000|00000|00000|00100',
+  ',':'00000|00000|00000|00000|00100|00100|01000',
+  '!':'00100|00100|00100|00100|00100|00000|00100',
+  '?':'01110|10001|00001|00110|00100|00000|00100',
+  "'":'00100|00100|00000|00000|00000|00000|00000',
+  '"':'01010|01010|00000|00000|00000|00000|00000',
+  '-':'00000|00000|00000|01110|00000|00000|00000',
+  ':':'00000|00100|00000|00000|00100|00000|00000',
+  ';':'00000|00100|00000|00000|00100|00100|01000',
+  '(':'00010|00100|01000|01000|01000|00100|00010',
+  ')':'01000|00100|00010|00010|00010|00100|01000',
+  '/':'00001|00010|00010|00100|01000|01000|10000',
+  '&':'01100|10010|10100|01000|10101|10010|01101',
+  '>':'01000|00100|00010|00001|00010|00100|01000',
+  '<':'00010|00100|01000|10000|01000|00100|00010',
+  '[':'00110|00100|00100|00100|00100|00100|00110',
+  ']':'01100|00100|00100|00100|00100|00100|01100',
+  '%':'10001|00010|00100|00100|01000|10001|00000',
+  '*':'00000|10101|01110|11111|01110|10101|00000',
+  '+':'00000|00100|00100|11111|00100|00100|00000',
+  '=':'00000|00000|11111|00000|11111|00000|00000',
+  '#':'01010|01010|11111|01010|11111|01010|01010',
+  '_':'00000|00000|00000|00000|00000|00000|11111',
+  '·':'00000|00000|00000|01100|01100|00000|00000'
+};
+const FONT = {};
+for (const ch in FONT_SRC) FONT[ch] = FONT_SRC[ch].split('|');
+const FONT_FALLBACK = FONT['?'];
+
+const FONT_COLOR_VARIANTS = {};
+function fontTint(color) {
+  if (FONT_COLOR_VARIANTS[color]) return FONT_COLOR_VARIANTS[color];
+  const adj = {};
+  for (const ch in FONT) {
+    adj[ch] = FONT[ch].map(r => r.replace(/1/g, '#'));
+  }
+  FONT_COLOR_VARIANTS[color] = adj;
+  return adj;
+}
+
+// draw a single line of text; scale 1 = 5x7 px, advance 6px per char
+function drawText(ctx, str, x, y, color, scale = 1, shadow = null) {
+  if (shadow) drawTextRaw(ctx, str, x + scale, y + scale, shadow, scale);
+  drawTextRaw(ctx, str, x, y, color, scale);
+}
+function drawTextRaw(ctx, str, x, y, color, scale) {
+  ctx.fillStyle = color;
+  let cx = Math.round(x);
+  const cy = Math.round(y);
+  for (let i = 0; i < str.length; i++) {
+    const g = FONT[str[i]] || (str[i] === ' ' ? FONT[' '] : FONT_FALLBACK);
+    for (let r = 0; r < 7; r++) {
+      const row = g[r];
+      for (let c = 0; c < 5; c++) {
+        if (row[c] === '1') ctx.fillRect(cx + c * scale, cy + r * scale, scale, scale);
+      }
+    }
+    cx += 6 * scale;
+  }
+}
+function textWidth(str, scale = 1) {
+  // account for tracked space: 5px glyph + 1px gap, last gap trimmed
+  return str.length === 0 ? 0 : str.length * 6 * scale - scale;
+}
+
+
+/* --------------------------------------------------------------- 3. SPRITES */
+// Palette shared by all sprites. Muted tropical, warm sand, deep teals.
+const PAL = {
+  k: '#161a2b', // outline
+  K: '#232a40', // soft outline
+  w: '#f4efe4', // off-white
+  W: '#d9d2c6',
+  s: '#f0c290', // skin
+  S: '#c9936a', // skin shadow
+  h: '#3d2b3f', // hair
+  H: '#5b4159',
+  b: '#2e6f9e', // sailor blue
+  B: '#1f4f78',
+  c: '#cf4b57', // scarf / accent
+  C: '#9c3543',
+  n: '#2f3b4f', // dark cloth
+  g: '#3f7d4e', // pants green
+  G: '#2a5a38',
+  y: '#e8c45a', // gold / buttons
+  Y: '#b08f35',
+  r: '#c85a3c', // rust (shipwreck)
+  R: '#8f3a2a',
+  o: '#e08a4c', // orange
+  p: '#7d5ba6', // plum (Vax robes)
+  P: '#533a75',
+  q: '#a884c9', // light plum
+  e: '#e9a23b', // fruit/fire orange
+  t: '#a8552e', // trunk
+  T: '#7a3a20', // trunk dark
+  l: '#4f9d5d', // leaf
+  L: '#37774a', // leaf dark
+  m: '#79c06e', // leaf light
+  i: '#2b4550', // deep shadow
+  f: '#6fc3b8', // foam teal
+  u: '#8fd8c3'
+};
+
+// Row lengths are not validated — short rows are simply padded with '.'.
+function sheet(rows, pal) {
+  pal = pal || PAL;
+  const h = rows.length, w = rows[0].length;
+  const { c, x } = makeCanvas(w, h);
+  for (let r = 0; r < h; r++) {
+    const row = rows[r];
+    for (let q = 0; q < row.length; q++) {
+      const ch = row[q];
+      if (ch === '.' || ch === ' ') continue;
+      const col = pal[ch];
+      if (!col) continue;
+      x.fillStyle = col;
+      x.fillRect(q, r, 1, 1);
+    }
+  }
+  return c;
+}
+
+// --- PLAYER (sailor) base body: 13 wide x 16 tall, 4 hurtbox-friendly
+const PLAYER_BODY = [
+  '.....kkkkk...',
+  '....khhhhhk..',
+  '...khhhhhhhk.',
+  '...khsssssk..',
+  '...kksskssk..',
+  '...kssscssk..',
+  '....kssssk...',
+  '...kkccckk...',
+  '..kbcbbbbcbk.',
+  '.ksbbbybbbbsk',
+  '.ksbbbbbbbbsk',
+  '..kkbbbbbbk..',
+  '...kggggggk..',
+  '...kggkkggk..',
+  '...kggk.kggk.',
+  '...kkkk.kkkk.'
+];
+const PLAYER_DOWN = [
+  '.....kkkkk...',
+  '....khhhhhk..',
+  '...khhhhhhhk.',
+  '...khsssssk..',
+  '...kksskssk..',
+  '...kssscssk..',
+  '....kssssk...',
+  '...kkccckk...',
+  '..kbcbbbbcbk.',
+  '.ksbbbybbbbsk',
+  '.ksbbbbbbbbsk',
+  '..kkbbbbbbk..',
+  '...kggggggk..',
+  '...kggkkggk..',
+  '...kggk.kggk.',
+  '...kkkk.kkkk.'
+];
+
+// build a sprite from a base plus per-frame overrides for the lower rows
+function mutate(base, changes) {
+  const rows = base.slice();
+  for (const k in changes) rows[+k] = changes[k];
+  return rows;
+}
+
+const SPR = {};
+
+function buildPlayerSprites() {
+  // Walking frames use the base pose but swap the final four rows (legs/sway).
+  const legs = {
+    // frame 0: left foot forward, arms swing
+    a: ['..kggggggk...', '..kggkkggk...', '.kggk..kggk..', '.kkkk...kkkk.'],
+    b: ['...kggggggk..', '...kgggkggk..', '..kggk..kggk.', '..kkkk...kkkk'],
+    idle: ['...kggggggk..', '...kggkkggk..', '...kggk.kggk.', '...kkkk.kkkk.']
+  };
+  // DOWN facing (front): face visible, blue jacket, red neckerchief
+  const mk = (rows) => sheet(rows);
+  SPR.p_down0 = mk(PLAYER_BODY);
+  SPR.p_down1 = mk([
+    '.....kkkkk...',
+    '....khhhhhk..',
+    '...khhhhhhhk.',
+    '...khsssssk..',
+    '...kksskssk..',
+    '...kssscssk..',
+    '....kssssk...',
+    '...kkccckk...',
+    '..kbcbbbbcbk.',
+    'ksbbbbybbbbsk',
+    'ksbbbbbbbbsk.',
+    '..kkbbbbbbk..',
+    '...kggggggk..',
+    '..kggkkggk...',
+    '.kggk..kggk..',
+    '.kkkk...kkkk.'
+  ]);
+  SPR.p_down2 = mk(PLAYER_BODY);
+  SPR.p_down3 = mk([
+    '.....kkkkk...',
+    '....khhhhhk..',
+    '...khhhhhhhk.',
+    '...khsssssk..',
+    '...kksskssk..',
+    '...kssscssk..',
+    '....kssssk...',
+    '...kkccckk...',
+    '..kbcbbbbcbk.',
+    '.ksbbbybbbbsk',
+    'ksbbbbbbbbsk.',
+    '..kkbbbbbbk..',
+    '...kggggggk..',
+    '...kggkkggk..',
+    '..kggk..kggk.',
+    '..kkkk...kkkk'
+  ]);
+
+  // UP facing (back of head + back of jacket + hair bun)
+  const UP_BASE = [
+    '.....kkkkk...',
+    '....khhhhhk..',
+    '...khhhhhhhk.',
+    '...khhhhhhhk.',
+    '...khhhhhhhk.',
+    '...khhhhhhhk.',
+    '....khhhhhk..',
+    '...kkccckk...',
+    '..kbcbbbbcbk.',
+    '.ksbbbybbbbsk',
+    '.ksbbbbbbbbsk',
+    '..kkbbbbbbk..',
+    '...kggggggk..',
+    '...kggkkggk..',
+    '...kggk.kggk.',
+    '...kkkk.kkkk.'
+  ];
+  SPR.p_up0 = mk(UP_BASE);
+  SPR.p_up1 = mk(mutate(UP_BASE, {
+    9: 'ksbbbbybbbbsk', 10: 'ksbbbbbbbbsk.',
+    13: '..kggkkggk...', 14: '.kggk..kggk..', 15: '.kkkk...kkkk.'
+  }));
+  SPR.p_up2 = mk(UP_BASE);
+  SPR.p_up3 = mk(mutate(UP_BASE, {
+    9: '.ksbbbybbbbsk', 10: '.ksbbbbbbbbsk',
+    13: '...kggkkggk..', 14: '..kggk..kggk.', 15: '..kkkk...kkkk'
+  }));
+
+  // SIDE facing (right; left is mirrored at draw time via canvas scale)
+  const SIDE_BASE = [
+    '......kkkk...',
+    '.....khhhhk..',
+    '....khhhhhhk.',
+    '....khsssskk.',
+    '....khskssksk',
+    '....khsssssk.',
+    '.....kssskk..',
+    '....kkccck...',
+    '...kbbbbbbk..',
+    '...kbbbybbk..',
+    '...kbbbbbbk..',
+    '...kkbbbbkk..',
+    '....kggggk...',
+    '....kgggggk..',
+    '....kggk.kggk',
+    '....kkkk.kkkk'
+  ];
+  SPR.p_right0 = mk(SIDE_BASE);
+  SPR.p_right1 = mk(mutate(SIDE_BASE, {
+    8: '...kbbbbbbk..', 9: '...kbbbybbk..', 10: '..kbbbbbbk...', 11: '..kkbbbbkk...',
+    12: '...kgggggk...', 13: '..kgggggk....', 14: '.kggk..kggk..', 15: '.kkkk...kkkk.'
+  }));
+  SPR.p_right2 = mk(SIDE_BASE);
+  SPR.p_right3 = mk(mutate(SIDE_BASE, {
+    12: '...kggggggk..', 13: '...kggkgggk..', 14: '..kggk...kggk', 15: '..kkkk...kkkk'
+  }));
+
+  // IDLE variants: a slow breath (shoulders down 1px) + blink frames for down/right
+  SPR.p_down_idle = mk(PLAYER_BODY);
+  SPR.p_down_blink = mk(mutate(PLAYER_BODY, {
+    4: '...kkkkskkk..',
+    5: '...kssscssk..'
+  }));
+  SPR.p_up_idle = SPR.p_up0;
+  SPR.p_right_idle = SPR.p_right0;
+  SPR.p_right_blink = mk(mutate(SIDE_BASE, { 4: '....khskksksk' }));
+
+  // shadow + a simple "sitting/washed up" pose used at spawn? (kept simple)
+}
+
+// --- TREE / FOLIAGE / PROPS
+function buildPropSprites() {
+  // driftwood plank
+  SPR.plank = sheet([
+    '..kkkkkkkkkkk..',
+    '.kttTtttTttttk.',
+    'ktTttttttTttttk',
+    '.kTTTtttTTTttk.',
+    '..kkkkkkkkkkk..'
+  ]);
+  // barrel
+  SPR.barrel = sheet([
+    '..kkkkkkkk..',
+    '.ktTtttTttk.',
+    'kttttttttttk',
+    'kTTTTTTTTTTk',
+    'kttttttttttk',
+    'kTTTTTTTTTTk',
+    'kttttttttttk',
+    'kTTTTTTTTTTk',
+    '.ktTtttTttk.',
+    '..kkkkkkkk..'
+  ]);
+  // crate (weathered)
+  SPR.crate = sheet([
+    'kkkkkkkkkkkk',
+    'kttTttttTttk',
+    'ktTtttttTttk',
+    'kttTtttTtttk',
+    'ktttTTTTtttk',
+    'ktttTTTTtttk',
+    'kttTtttTtttk',
+    'ktTtttttTttk',
+    'kttTttttTttk',
+    'kkkkkkkkkkkk'
+  ]);
+  // shell
+  SPR.shell = sheet([
+    '..kkk..',
+    '.kwWsk.',
+    'kwWwWsk',
+    'kwWwWsk',
+    '.ksssk.',
+    '..kkk..'
+  ], Object.assign({}, PAL, { s: '#e7c3b0', W: '#f7e6de' }));
+  // starfish
+  SPR.starfish = sheet([
+    '...k...',
+    '..kok..',
+    'kkookk.',
+    'koooook',
+    '.kookk.',
+    '..k.k..'
+  ], Object.assign({}, PAL, { o: '#e07a4e' }));
+  // strange footprint/marking in sand
+  SPR.footprint = sheet([
+    '.kkk...kkk.',
+    'kiiik.kiiik',
+    'kiiik.kiiik',
+    '.kik...kik.',
+    '..k.....k..'
+  ]);
+  // sign (hand-painted, leaning)
+  SPR.sign = sheet([
+    '..kkkkkkkkkkkk..',
+    '.kttttttttttttk.',
+    'ktTtttttttttTtk.',
+    'kttttwwwwwttttk.',
+    'ktTttwwwwwtttTk.',
+    'kttttwwwwwttttk.',
+    '.kTTTTTTTTTTTTk.',
+    '..kkkkktTkkkkk..',
+    '.......tTt......',
+    '.......tTt......',
+    '......ttTtt.....',
+    '......kkkkk.....'
+  ]);
+  // campfire-ish? (no: keep restrained) -> small lantern post near Vax
+  SPR.lanternPost = sheet([
+    '..kkkkkk..',
+    '.kyyyyyyk.',
+    'kyeeeeeeyk',
+    'kyeeyyeeek',
+    'kyeeyyeeek',
+    'kyeeeeeeyk',
+    '.kyyyyyyk.',
+    '..kkkkkk..',
+    '....tT....',
+    '....tT....',
+    '....tT....',
+    '...ttTTt..',
+    '...kkkkk..'
+  ]);
+  // vine / hanging plant for cave
+  SPR.vine = sheet([
+    'l..l...l..',
+    'Ll.lL.lL..',
+    '.LlLLlLl..',
+    '.lLLlLLl..',
+    '..lLlLl...',
+    '..lLlL....',
+    '...lll....'
+  ]);
+  // wave sparkle
+  SPR.sparkle = sheet(['..w..', '.wWw.', 'wWWWw', '.wWw.', '..w..'], Object.assign({}, PAL, { W: '#bfe8e0' }));
+  // splash ring
+  SPR.ring = sheet(['..fff..', '.f...f.', 'f.....f', '.f...f.', '..fff..']);
+}
+
+// --- ICONS (examined objects get a tiny "!" bubble; objective marker)
+function buildIcons() {
+  SPR.bang = sheet([
+    '.kkkkk.',
+    'kwwwwwk',
+    'kwwkwwk',
+    'kwwkwwk',
+    'kwwkwwk',
+    'kwwwwwk',
+    'kwwkwwk',
+    'kwwwwwk',
+    '.kkkkk.'
+  ]);
+  SPR.bubble = sheet([
+    '..kkkkkkk..',
+    '.kwwwwwwwk.',
+    'kwwwwwwwwwk',
+    'kwwwwwwwwwk',
+    'kwwwwwwwwwk',
+    'kwwwwwwwwwk',
+    '.kwwwwwwwk.',
+    '..kkkwwkkk.',
+    '....kwk....',
+    '.....k.....'
+  ]);
+  SPR.pawMark = sheet([
+    '...kkk...kkk...',
+    '..kiiik.kiiik..',
+    '..kiiik.kiiik..',
+    '...kik...kik...',
+    '....k.....k....'
+  ]);
+  // small boat icon for the title screen
+  SPR.boat = sheet([
+    '.......kk........',
+    '......kwWk.......',
+    '.....kwwwWk......',
+    '....kwwwwWWk.....',
+    '...kwwwwwwWWk....',
+    '..kwwwwwwwwWWk...',
+    '.kwwwwwwwwwwwWk..',
+    'kkkkkkkkkkkkkkkk.',
+    '.krrrrrrrrrrrrk..',
+    '..kkkkkkkkkkkk...'
+  ]);
+}
+
+// --- PORTRAITS (28x28) drawn in the dialogue box
+function buildPortraits() {
+  SPR.por_vax = sheet([
+    '........kkkkkkk.............',
+    '......kkyyyyyyykk...........',
+    '....kkyyeeeeeeeyykk.........',
+    '...kyyeeeyyyyeeeeyyk........',
+    '..kyeeyyyyyyyyyyyeyyk.......',
+    '..kyyyyyyyyyyyyyyyyyk.......',
+    '...kkkkkkkkkkkkkkkkk........',
+    '....kppppppppppppk..........',
+    '...kppqqqpppppqqppk.........',
+    '...kpqppppppppppqpk.........',
+    '...kpkkkkkkkkkkkkpk.........',
+    '...kpkssssssssssskpk........',
+    '...kpkskkkssskkkskpk........',
+    '...kpkskbksskbksskpk........',
+    '...kpksskkssskksskpk........',
+    '...kpksssssnnsssskpk........',
+    '...kpkssssssssssskpk........',
+    '...kpksskkkkkkssskpk........',
+    '....kksssssssssskk..........',
+    '....kppppppppppppk..........',
+    '...kppppppyyyppppppk........',
+    '..kppppppppppppppppppk......',
+    '..kppppppppppppppppppk......',
+    '..kppPppppppppppppPppk......',
+    '..kppPppppppppppppPppk......',
+    '..kPPPppppppppppppPPPk......',
+    '...kkkkkkkkkkkkkkkkkk.......',
+    '.....kssssk..kssssk.........'
+  ]);
+  SPR.por_player = sheet([
+    '............................',
+    '.........kkkkkkk............',
+    '.......kkhhhhhhhkk..........',
+    '......khhhhhhhhhhhk.........',
+    '.....khhhhhhhhhhhhhk........',
+    '.....khhhssssssshhhk........',
+    '....khhkssssssssskhhk.......',
+    '....khkssssssssssskkk.......',
+    '....khkskksssskksssk........',
+    '....khkswksssskwsssk........',
+    '....khkskksssskksssk........',
+    '....khkssssssssssssk........',
+    '....khksssssnnsssssk........',
+    '.....kksssssssssssk.........',
+    '.....kssskkkkkksssk.........',
+    '......kssssssssssk..........',
+    '....kkkcccccccccckkk........',
+    '...kbbbbbbbbbbbbbbbbk.......',
+    '..kbbbbbbbyybbbbbbbbbk......',
+    '..kbbbbbbbyybbbbbbbbbk......',
+    '..kbbbbbbbbbbbbbbbbbbk......',
+    '..kbbbbbbbbbbbbbbbbbbk......',
+    '..kBbbbbbbbbbbbbbbbbBk......',
+    '...kkkkkkkkkkkkkkkkkk.......',
+    '.....kggggk..kggggk.........',
+    '.....kggggk..kggggk.........',
+    '.....kkkkkk..kkkkkk.........',
+    '............................'
+  ]);
+}
+
+function buildAllSprites() {
+  buildPlayerSprites();
+  buildVaxSprites();
+  buildPropSprites();
+  buildPaintedProps();
+  buildIcons();
+  buildPortraits();
+}
+
+/* ------------------------------------------------ 3b. PROCEDURAL PAINTERS */
+// Big organic props are painted with code (curves, circles, clipped planks)
+// instead of hand-typed pixel maps: easier to tune and much more natural.
+function fillCircle(x, cx, cy, r, col) {
+  if (r <= 0) return;
+  x.fillStyle = col;
+  for (let dy = -Math.round(r); dy <= Math.round(r); dy++) {
+    const dx = Math.floor(Math.sqrt(Math.max(0, r * r - dy * dy)));
+    x.fillRect(Math.round(cx - dx), Math.round(cy + dy), dx * 2 + 1, 1);
+  }
+}
+function px(x, x0, y0, col) {
+  x.fillStyle = col;
+  x.fillRect(Math.round(x0), Math.round(y0), 1, 1);
+}
+
+// ---- palm tree: ringed leaning trunk + solid drooping fronds + coconuts
+function paintPalm(seed, opt) {
+  opt = Object.assign({ H: 56, W: 54, trunkH: 21, lean: 1, fronds: 9, fruit: true }, opt);
+  const rng = mulberry32(seed);
+  const { c, x } = makeCanvas(opt.W, opt.H);
+  const baseX = Math.round(opt.W / 2);
+  const line = [];
+  for (let i = 0; i <= opt.trunkH; i++) {
+    const t = i / opt.trunkH;
+    const cx = baseX + Math.round((Math.sin(t * 1.9) * 0.9 + t * 0.5) * opt.lean * 2.6);
+    line.push([cx, opt.H - 1 - i]);
+  }
+  // trunk: 5px at the roots, 3px at the crown, ringed
+  for (let i = 0; i < line.length; i++) {
+    const [cx, cy] = line[i];
+    const q = i / (line.length - 1);
+    const half = q < 0.18 ? 2 : 1;
+    x.fillStyle = '#6b3520'; x.fillRect(cx - half - 1, cy, half * 2 + 3, 1);
+    x.fillStyle = '#a8552e'; x.fillRect(cx - half, cy, half * 2 + 1, 1);
+    x.fillStyle = '#c47a44'; x.fillRect(cx - half, cy, half, 1);
+    if (i % 3 === 1) { x.fillStyle = '#7a3a20'; x.fillRect(cx - half, cy, half * 2 + 1, 1); }
+  }
+  const [rtx, rty] = line[0];
+  x.fillStyle = '#6b3520'; x.fillRect(rtx - 4, rty, 9, 1);
+  x.fillStyle = '#a8552e'; x.fillRect(rtx - 3, rty - 1, 2, 1); x.fillRect(rtx + 2, rty - 1, 2, 1);
+  const [tx, ty] = line[line.length - 1];
+  // fronds: solid tapered blades with a lighter top edge and dark underside
+  const blade = (ang, len, drop, colTop, colMid, colLow) => {
+    for (let s2 = 0; s2 <= len; s2++) {
+      const q = s2 / len;
+      const fx = tx + Math.cos(ang) * s2 * 1.02;
+      const fy = ty + Math.sin(ang) * s2 * 0.72 + q * q * drop;
+      const wHalf = (2.6 - q * 2.1) * (1 - q * 0.15);
+      const perp = ang + Math.PI / 2;
+      const span = Math.max(0, Math.round(wHalf));
+      for (let w = -span; w <= span; w++) {
+        const col = w < 0 ? colTop : (w === 0 ? colMid : colLow);
+        x.fillStyle = col;
+        x.fillRect(Math.round(fx + Math.cos(perp) * w), Math.round(fy + Math.sin(perp) * w * 0.7), 1, 1);
+      }
+    }
+  };
+  const fronds = [];
+  for (let f = 0; f < opt.fronds; f++) {
+    const t = f / (opt.fronds - 1);
+    const ang = -Math.PI + 0.16 + t * (Math.PI - 0.32) + (rng() - 0.5) * 0.14;
+    const len = 14 + Math.sin(f * 1.9) * 3 + rng() * 3;
+    fronds.push([ang, len, 10 + rng() * 4]);
+  }
+  // dark undertone first, then the leaves on top
+  fronds.forEach(([a, l, d]) => blade(a, l, d + 1, '#1f4a30', '#2a5a38', '#24512f'));
+  fronds.forEach(([a, l, d]) => blade(a, l, d, '#5fae63', '#4f9d5d', '#37774a'));
+  // a few upright centre fronds for a fuller crown
+  for (let i = 0; i < 3; i++) {
+    const a = -Math.PI / 2 + (i - 1) * 0.55;
+    blade(a, 8 + i * 2, 4, '#79c06e', '#5fae63', '#4f9d5d');
+  }
+  // crown + coconuts
+  x.fillStyle = '#2a5a38'; x.fillRect(tx - 1, ty - 1, 3, 2);
+  x.fillStyle = '#4a2f1c';
+  x.fillRect(tx - 3, ty + 2, 2, 2); x.fillRect(tx + 2, ty + 3, 2, 2);
+  x.fillStyle = '#6b4426';
+  x.fillRect(tx - 3, ty + 2, 1, 1); x.fillRect(tx + 2, ty + 3, 1, 1);
+  return c;
+}
+
+// ---- leafy canopy tree (round, layered, with fruit)
+function paintCanopyTree(seed, opt) {
+  opt = Object.assign({ W: 52, H: 50, fruit: true, fruitColor: '#e9a23b', canopyY: 24 }, opt);
+  const rng = mulberry32(seed);
+  const { c, x } = makeCanvas(opt.W, opt.H);
+  const cx = Math.round(opt.W / 2), baseY = opt.H - 1;
+  // trunk + roots
+  for (let i = 0; i < 15; i++) {
+    const y = baseY - i, off = Math.round(Math.sin(i * 0.22) * 1.2);
+    x.fillStyle = i % 4 === 0 ? '#7a3a20' : '#a8552e';
+    x.fillRect(cx - 1 + off, y, 3, 1);
+    if (i < 8) px(x, cx - 2 + off, y, '#8f4a28');
+  }
+  x.fillStyle = '#7a3a20';
+  x.fillRect(cx - 5, baseY - 1, 4, 1); x.fillRect(cx + 2, baseY - 1, 4, 1);
+  // branches
+  x.fillStyle = '#7a3a20';
+  x.fillRect(cx - 4, baseY - 13, 4, 1); x.fillRect(cx + 2, baseY - 15, 4, 1);
+  x.fillRect(cx - 7, baseY - 17, 4, 1); x.fillRect(cx + 4, baseY - 19, 4, 1);
+  // canopy blobs
+  const blobs = [[cx, baseY - opt.canopyY, 10]];
+  const n = opt.fruit === false ? 6 : 7;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + seed;
+    blobs.push([
+      cx + Math.cos(a) * 11 + (rng() - 0.5) * 3,
+      baseY - opt.canopyY + Math.sin(a) * 6 + (rng() - 0.5) * 3,
+      6 + rng() * 3.5
+    ]);
+  }
+  blobs.forEach(b => fillCircle(x, b[0], b[1], b[2] + 1, '#2a5a38'));
+  blobs.forEach(b => fillCircle(x, b[0], b[1], b[2], '#3f7d4e'));
+  blobs.forEach(b => fillCircle(x, b[0] - 2, b[1] - 2, b[2] - 3.2, '#4f9d5d'));
+  blobs.forEach(b => fillCircle(x, b[0] - 2, b[1] - 3, b[2] - 5, '#5fae63'));
+  for (let i = 0; i < 40; i++) {
+    const b = blobs[(rng() * blobs.length) | 0];
+    x.fillStyle = rng() > 0.45 ? '#79c06e' : '#37774a';
+    x.fillRect(Math.round(b[0] + (rng() - 0.5) * b[2] * 1.7), Math.round(b[1] + (rng() - 0.5) * b[2] * 1.5), 1, 1);
+  }
+  if (opt.fruit) {
+    for (let i = 0; i < 8; i++) {
+      const b = blobs[(rng() * blobs.length) | 0];
+      const fx = Math.round(b[0] + (rng() - 0.5) * b[2] * 1.6);
+      const fy = Math.round(b[1] + (rng() - 0.5) * b[2] * 1.3) + 2;
+      x.fillStyle = '#a4552a'; x.fillRect(fx, fy, 3, 3);
+      x.fillStyle = opt.fruitColor; x.fillRect(fx, fy, 2, 2);
+      px(x, fx, fy, '#ffe6a8');
+    }
+  }
+  return c;
+}
+
+// ---- bush (low, layered)
+function paintBush(seed, opt) {
+  opt = Object.assign({ W: 30, H: 20, fruit: false, fruitColor: '#cf4b57' }, opt);
+  const rng = mulberry32(seed);
+  const { c, x } = makeCanvas(opt.W, opt.H);
+  const cy = opt.H - 6, cx = Math.round(opt.W / 2);
+  const blobs = [];
+  for (let i = 0; i < 4; i++) {
+    blobs.push([cx + (i - 1.5) * 5 + (rng() - 0.5) * 2, cy + (rng() - 0.5) * 3, 5 + rng() * 3]);
+  }
+  blobs.forEach(b => fillCircle(x, b[0], b[1], b[2] + 1, '#2a5a38'));
+  blobs.forEach(b => fillCircle(x, b[0], b[1], b[2], '#3f7d4e'));
+  blobs.forEach(b => fillCircle(x, b[0] - 1.5, b[1] - 2, b[2] - 2.2, '#4f9d5d'));
+  blobs.forEach(b => fillCircle(x, b[0] - 2.5, b[1] - 3, b[2] - 4, '#5fae63'));
+  for (let i = 0; i < 16; i++) {
+    const b = blobs[(rng() * blobs.length) | 0];
+    x.fillStyle = rng() > 0.5 ? '#79c06e' : '#37774a';
+    x.fillRect(Math.round(b[0] + (rng() - 0.5) * b[2] * 1.6), Math.round(b[1] + (rng() - 0.5) * b[2] * 1.4), 1, 1);
+  }
+  if (opt.fruit) {
+    for (let i = 0; i < 6; i++) {
+      const b = blobs[(rng() * blobs.length) | 0];
+      const fx = Math.round(b[0] + (rng() - 0.5) * b[2] * 1.5);
+      const fy = Math.round(b[1] + (rng() - 0.5) * b[2] * 1.2) + 1;
+      x.fillStyle = '#8f2b38'; x.fillRect(fx, fy, 2, 2);
+      px(x, fx, fy, opt.fruitColor);
+    }
+  }
+  // ground shadow
+  x.fillStyle = 'rgba(20,40,30,0.20)';
+  x.fillRect(cx - 9, opt.H - 2, 18, 1);
+  return c;
+}
+
+// ---- grass tuft
+function paintGrass(seed) {
+  const rng = mulberry32(seed);
+  const W = 11, H = 9;
+  const { c, x } = makeCanvas(W, H);
+  for (let i = 0; i < 5; i++) {
+    const bx = 2 + i * 2 + (rng() < 0.5 ? 0 : 1);
+    const hgt = 3 + Math.floor(rng() * 4);
+    const lean = (rng() - 0.5) * 2.4;
+    for (let s = 0; s < hgt; s++) {
+      const q = s / hgt;
+      px(x, bx + lean * q * q * 2.2, H - 1 - s, s > hgt - 2 ? '#37774a' : '#4f9d5d');
+    }
+  }
+  return c;
+}
+
+// ---- flower
+function paintFlower(seed) {
+  const cols = ['#e8c45a', '#e08a4c', '#c9a6e0', '#f4efe4'];
+  const rng = mulberry32(seed);
+  const W = 9, H = 10;
+  const { c, x } = makeCanvas(W, H);
+  const cx = 4, baseY = H - 1;
+  for (let i = 0; i < 4; i++) px(x, cx + (i % 2 ? 1 : 0), baseY - i, '#37774a');
+  const col = cols[(rng() * cols.length) | 0];
+  fillCircle(x, cx, baseY - 6, 2.2, col);
+  px(x, cx, baseY - 6, '#f7e2a0');
+  return c;
+}
+
+// ---- boulder
+function paintRock(seed, size) {
+  const rng = mulberry32(seed);
+  const W = size, H = Math.round(size * 0.72) + 2;
+  const { c, x } = makeCanvas(W, H);
+  const cx = W / 2, cy = H * 0.62;
+  fillCircle(x, cx, cy, W * 0.5, '#252b33');
+  fillCircle(x, cx, cy - 0.5, W * 0.46, '#57626c');
+  fillCircle(x, cx - 1, cy - 2, W * 0.38, '#7e8a92');
+  fillCircle(x, cx - 2, cy - 3.5, W * 0.24, '#98a4ab');
+  for (let i = 0; i < 8; i++) {
+    x.fillStyle = rng() > 0.5 ? '#8e9aa1' : '#4a5560';
+    x.fillRect(Math.round(cx + (rng() - 0.45) * W * 0.7), Math.round(cy - 1 + (rng() - 0.5) * H * 0.6), 1, 1);
+  }
+  return c;
+}
+
+// ---- shipwreck hull, half buried in the sand
+function paintWreck() {
+  const W = 64, H = 36;
+  const { c, x } = makeCanvas(W, H);
+  const baseY = H - 4;
+  // sand mound the hull has dug into
+  x.fillStyle = '#cdb689';
+  x.fillRect(9, baseY + 1, 40, 1);
+  x.fillRect(14, baseY + 2, 26, 1);
+  x.fillStyle = '#dcc79a';
+  x.fillRect(12, baseY, 22, 1);
+  // hull: a planked crescent, stern high on the left
+  const hull = new Path2D();
+  hull.moveTo(4, 22);
+  hull.quadraticCurveTo(6, 9, 20, 6);
+  hull.quadraticCurveTo(36, 3, 50, 9);
+  hull.quadraticCurveTo(61, 14, 60, 22);
+  hull.quadraticCurveTo(58, 30, 44, 31);
+  hull.quadraticCurveTo(24, 32, 10, 29);
+  hull.closePath();
+  x.save();
+  x.clip(hull);
+  x.fillStyle = '#8a4a33'; x.fillRect(0, 0, W, H);
+  for (let y = 6; y < H; y += 3) {
+    x.fillStyle = '#a05a3d'; x.fillRect(0, y, W, 2);
+    x.fillStyle = '#5f3222'; x.fillRect(0, y + 2, W, 1);
+  }
+  // sunlit upper strake
+  x.fillStyle = '#b4694a'; x.fillRect(0, 6, W, 3);
+  x.fillStyle = '#c4795a'; x.fillRect(0, 9, W, 1);
+  // torn-out section on the right (seaward side)
+  fillCircle(x, 48, 20, 9, '#2a1a15');
+  fillCircle(x, 51, 22, 6, '#191110');
+  // nail heads
+  for (let i = 0; i < 12; i++) {
+    x.fillStyle = '#4a2a1e';
+    x.fillRect(8 + i * 4, 12 + (i % 3) * 5, 1, 1);
+  }
+  // wet waterline
+  x.fillStyle = 'rgba(226,244,238,0.14)'; x.fillRect(0, 26, W, 5);
+  x.restore();
+  x.strokeStyle = '#26170f'; x.lineWidth = 1; x.stroke(hull);
+  // broken ribs poking above the gunwale
+  const ribs = [[14, 7, 5, -1], [22, 4, 6, 0], [30, 3, 5, 0], [37, 6, 4, 1]];
+  ribs.forEach(([rx, ry, rh, sk]) => {
+    for (let i = 0; i < rh; i++) {
+      const xx = rx + (i > rh * 0.55 ? sk : 0);
+      x.fillStyle = '#26170f'; x.fillRect(xx, ry + i, 2, 1);
+      x.fillStyle = '#b4694a'; x.fillRect(xx, ry + i, 1, 1);
+    }
+  });
+  // snapped mast stump at the stern
+  x.fillStyle = '#26170f'; x.fillRect(9, baseY - 16, 4, 16);
+  x.fillStyle = '#8a4a33'; x.fillRect(10, baseY - 15, 2, 15);
+  x.fillStyle = '#b4694a'; x.fillRect(10, baseY - 15, 1, 6);
+  x.fillStyle = '#4a2a1e'; x.fillRect(10, baseY - 17, 3, 2);
+  // seaweed & a spar stuck in the sand
+  x.fillStyle = '#37774a'; x.fillRect(26, 26, 1, 5); x.fillRect(27, 28, 2, 1);
+  x.fillStyle = '#2a5a38'; x.fillRect(45, 24, 1, 6);
+  x.fillStyle = '#7a3a20'; x.fillRect(56, baseY - 2, 7, 2);
+  return c;
+}
+
+// ---- broken mast with a torn sail, leaning in the sand
+function paintMast() {
+  const W = 32, H = 36;
+  const { c, x } = makeCanvas(W, H);
+  // leaning pole
+  for (let y = 0; y < 32; y++) {
+    const xx = 12 + Math.round(y * 0.16);
+    x.fillStyle = '#3a2012'; x.fillRect(xx, y, 4, 1);
+    x.fillStyle = '#a05534'; x.fillRect(xx + 1, y, 2, 1);
+  }
+  // yard arm, snapped at one end
+  x.fillStyle = '#3a2012'; x.fillRect(6, 7, 22, 3);
+  x.fillStyle = '#8a4a30'; x.fillRect(7, 8, 20, 1);
+  x.fillStyle = '#2a1610'; x.fillRect(27, 6, 3, 5);
+  // torn sail hanging from the yard
+  const sail = new Path2D();
+  sail.moveTo(9, 10); sail.lineTo(25, 10); sail.lineTo(24, 22);
+  sail.lineTo(21, 18); sail.lineTo(19, 25); sail.lineTo(16, 19);
+  sail.lineTo(13, 24); sail.lineTo(11, 17); sail.lineTo(9, 20);
+  sail.closePath();
+  x.save(); x.clip(sail);
+  x.fillStyle = '#cfc7b6'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#b3aa99'; x.fillRect(0, 16, W, 1); x.fillRect(13, 10, 1, 8);
+  x.fillStyle = '#e8e1d1'; x.fillRect(10, 11, 5, 4);
+  x.fillStyle = 'rgba(90,80,64,0.25)'; x.fillRect(0, 20, W, 6);
+  x.restore();
+  x.strokeStyle = '#5d5346'; x.lineWidth = 1; x.stroke(sail);
+  // rope ends and seaweed
+  x.fillStyle = '#6b5b3f';
+  for (let i = 0; i < 4; i++) x.fillRect(9 + i * 2, 10, 1, 1);
+  x.fillStyle = '#37774a'; x.fillRect(6, 30, 3, 1); x.fillRect(23, 31, 4, 1);
+  x.fillStyle = '#2a5a38'; x.fillRect(16, 32, 2, 1);
+  // snapped foot
+  x.fillStyle = '#3a2012'; x.fillRect(14, 31, 6, 2);
+  return c;
+}
+
+// ---- dead, dark tree for the ominous treeline
+function paintDeadTree(seed) {
+  const rng = mulberry32(seed);
+  const W = 34, H = 40;
+  const { c, x } = makeCanvas(W, H);
+  const branch = (x0, y0, ang, len, wid, depth) => {
+    for (let s = 0; s < len; s++) {
+      const q = s / len;
+      const bx = x0 + Math.cos(ang) * s;
+      const by = y0 + Math.sin(ang) * s;
+      const w = Math.max(1, Math.round(wid * (1 - q * 0.6)));
+      x.fillStyle = depth > 1 ? '#1a1526' : '#251d33';
+      x.fillRect(Math.round(bx), Math.round(by), w, 1);
+    }
+    if (depth > 0) {
+      const ex = x0 + Math.cos(ang) * len, ey = y0 + Math.sin(ang) * len;
+      branch(ex, ey, ang - 0.45 - rng() * 0.35, len * 0.68, Math.max(1, wid - 1), depth - 1);
+      branch(ex, ey, ang + 0.4 + rng() * 0.35, len * 0.62, Math.max(1, wid - 1), depth - 1);
+      if (depth === 2 && rng() > 0.5) branch(ex, ey, ang + 0.05, len * 0.5, 1, depth - 2);
+    }
+  };
+  branch(W / 2, H - 1, -Math.PI / 2 + (rng() - 0.5) * 0.15, 15, 3, 3);
+  // roots
+  x.fillStyle = '#251d33';
+  x.fillRect(W / 2 - 5, H - 2, 4, 2); x.fillRect(W / 2 + 2, H - 2, 5, 2);
+  return c;
+}
+
+// ---- fern / jungle plant
+function paintFern(seed) {
+  const rng = mulberry32(seed);
+  const W = 24, H = 18;
+  const { c, x } = makeCanvas(W, H);
+  const bx = W / 2, by = H - 1;
+  for (let f = 0; f < 6; f++) {
+    const ang = -Math.PI + 0.35 + (f / 5) * (Math.PI - 0.7);
+    const len = 9 + rng() * 5;
+    for (let s = 0; s < len; s++) {
+      const q = s / len;
+      const fx = bx + Math.cos(ang) * s * 0.9;
+      const fy = by + Math.sin(ang) * s * 0.75 + q * q * 4;
+      px(x, fx, fy, s % 2 ? '#37774a' : '#4f9d5d');
+      if (s > 1 && s % 2 === 0) px(x, fx + 1, fy + 1, '#2a5a38');
+    }
+  }
+  return c;
+}
+
+// ---- cave mouth in a mossy rock face
+function paintCave() {
+  const W = 58, H = 34;
+  const { c, x } = makeCanvas(W, H);
+  const cx = W / 2, baseY = H - 1;
+  // rock mass
+  fillCircle(x, cx, baseY - 5, 25, '#171a22');
+  fillCircle(x, cx - 4, baseY - 7, 20, '#2c323a');
+  fillCircle(x, cx - 9, baseY - 11, 10, '#3a4149');
+  fillCircle(x, cx + 9, baseY - 4, 9, '#232830');
+  fillCircle(x, cx - 14, baseY - 2, 7, '#2c323a');
+  fillCircle(x, cx + 15, baseY - 1, 6, '#20242b');
+  for (let i = 0; i < 10; i++) {
+    x.fillStyle = i % 2 ? '#2f5a3c' : '#26492f';
+    x.fillRect(Math.round(cx - 22 + (i * 4.6) % 44), Math.round(baseY - 16 + Math.sin(i) * 6), 2, 1);
+  }
+  // arch
+  const arch = new Path2D();
+  arch.moveTo(cx - 11, baseY - 1);
+  arch.quadraticCurveTo(cx - 12, baseY - 20, cx, baseY - 21);
+  arch.quadraticCurveTo(cx + 12, baseY - 20, cx + 11, baseY - 1);
+  arch.closePath();
+  x.fillStyle = '#11131c'; x.fill(arch);
+  const inner = new Path2D();
+  inner.moveTo(cx - 7, baseY - 1);
+  inner.quadraticCurveTo(cx - 8, baseY - 16, cx, baseY - 17);
+  inner.quadraticCurveTo(cx + 8, baseY - 16, cx + 7, baseY - 1);
+  inner.closePath();
+  x.fillStyle = '#07080d'; x.fill(inner);
+  // stone lip
+  x.strokeStyle = '#5b656d'; x.lineWidth = 1; x.stroke(arch);
+  // moss and hanging roots
+  x.fillStyle = '#2f5a3c'; x.fillRect(cx - 14, baseY - 16, 5, 2); x.fillRect(cx + 9, baseY - 13, 5, 2);
+  x.fillStyle = '#3f7d4e'; x.fillRect(cx - 13, baseY - 17, 3, 1); x.fillRect(cx + 10, baseY - 14, 3, 1);
+  for (let i = 0; i < 4; i++) {
+    x.fillStyle = '#1d3d2a';
+    x.fillRect(cx - 9 + i * 5, baseY - 20 + (i % 2), 1, 3 + (i % 3));
+  }
+  // flickers of pale light deep inside (no explanation given)
+  x.fillStyle = 'rgba(150,170,190,0.13)';
+  x.fillRect(cx - 3, baseY - 10, 2, 2); x.fillRect(cx + 2, baseY - 6, 1, 1);
+  return c;
+}
+
+// ---- standing stone covered in hairline carvings
+function paintMonolith() {
+  const W = 24, H = 42;
+  const { c, x } = makeCanvas(W, H);
+  const cx = W / 2, baseY = H - 1;
+  const shape = new Path2D();
+  shape.moveTo(cx - 6, baseY);
+  shape.lineTo(cx - 5, baseY - 26);
+  shape.lineTo(cx - 2, baseY - 34);
+  shape.lineTo(cx + 3, baseY - 33);
+  shape.lineTo(cx + 5, baseY - 24);
+  shape.lineTo(cx + 6, baseY);
+  shape.closePath();
+  x.fillStyle = '#151320'; x.fill(shape);
+  x.save(); x.clip(shape);
+  x.fillStyle = '#201d2e'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#2b2740'; x.fillRect(cx - 5, 0, 4, H);
+  x.fillStyle = '#191623'; x.fillRect(cx + 1, 0, 6, H);
+  // a few hairline carvings only
+  x.fillStyle = '#3a3560';
+  x.fillRect(cx - 3, baseY - 22, 6, 1);
+  x.fillRect(cx - 2, baseY - 15, 4, 1);
+  x.fillRect(cx - 1, baseY - 26, 1, 5);
+  x.fillRect(cx + 1, baseY - 12, 1, 4);
+  x.fillStyle = '#4c4680'; x.fillRect(cx - 1, baseY - 29, 2, 1);
+  x.restore();
+  x.strokeStyle = '#0e0c16'; x.lineWidth = 1; x.stroke(shape);
+  // grass at the base
+  x.fillStyle = '#2a5a38'; x.fillRect(cx - 8, baseY - 1, 5, 1); x.fillRect(cx + 4, baseY - 1, 5, 1);
+  return c;
+}
+
+// ---- ritual marking pressed into the sand
+function paintSigil() {
+  const W = 26, H = 20;
+  const { c, x } = makeCanvas(W, H);
+  const cx = W / 2, cy = H / 2 - 1;
+  const ring = (r, col) => {
+    for (let a = 0; a < Math.PI * 2; a += 0.06) {
+      const dx = Math.round(cx + Math.cos(a) * r), dy = Math.round(cy + Math.sin(a) * r * 0.62);
+      x.fillStyle = col; x.fillRect(dx, dy, 1, 1);
+    }
+  };
+  ring(10, '#c2ab84'); ring(8.5, '#8d7a5f');
+  ring(5, '#8d7a5f'); ring(3.6, '#5f5344');
+  // radial ticks
+  for (let i = 0; i < 8; i++) {
+    const a = i / 8 * Math.PI * 2;
+    for (let r = 5.5; r < 8; r += 0.5) {
+      x.fillStyle = '#6f6049';
+      x.fillRect(Math.round(cx + Math.cos(a) * r), Math.round(cy + Math.sin(a) * r * 0.62), 1, 1);
+    }
+  }
+  x.fillStyle = '#4b4033'; x.fillRect(cx - 1, cy - 1, 2, 2);
+  return c;
+}
+
+// ---- woven mat Vax keeps his lantern on
+function paintMat() {
+  const W = 34, H = 16;
+  const { c, x } = makeCanvas(W, H);
+  for (let y = 0; y < H; y++) {
+    const half = Math.round(W / 2 * Math.sqrt(1 - Math.pow((y - H / 2) / (H / 2), 2)));
+    for (let xx = W / 2 - half; xx < W / 2 + half; xx++) {
+      const stripe = (Math.floor((xx + y) / 4) % 2 === 0);
+      x.fillStyle = y % 3 === 0 ? '#8a5f3c' : (stripe ? '#a8784a' : '#94693f');
+      x.fillRect(xx, y, 1, 1);
+    }
+  }
+  x.fillStyle = '#5e3f28';
+  x.fillRect(6, 2, 1, 12); x.fillRect(W - 7, 2, 1, 12);
+  return c;
+}
+
+// ---- fallen fruit + beach scrub, for ground detail
+function paintFallenFruit(seed) {
+  const rng = mulberry32(seed);
+  const { c, x } = makeCanvas(7, 5);
+  const cols = ['#e9a23b', '#d9663f', '#c4543f'];
+  for (let i = 0; i < 2 + Math.floor(rng() * 2); i++) {
+    const fx = 1 + Math.floor(rng() * 4), fy = 1 + Math.floor(rng() * 2);
+    x.fillStyle = '#8f4a28'; x.fillRect(fx, fy + 1, 3, 2);
+    x.fillStyle = cols[(rng() * cols.length) | 0]; x.fillRect(fx, fy, 2, 2);
+    x.fillStyle = '#a4552a'; x.fillRect(fx + 2, fy + 1, 1, 1);
+  }
+  return c;
+}
+function paintScrub(seed) {
+  const rng = mulberry32(seed);
+  const { c, x } = makeCanvas(13, 8);
+  for (let i = 0; i < 7; i++) {
+    const bx = 1 + Math.floor(rng() * 10), hgt = 2 + Math.floor(rng() * 4);
+    for (let s = 0; s < hgt; s++) {
+      x.fillStyle = s > hgt - 2 ? '#7d9a52' : '#93ab60';
+      x.fillRect(bx + (s > 1 && rng() > 0.5 ? 1 : 0), 7 - s, 1, 1);
+    }
+  }
+  return c;
+}
+
+function buildPaintedProps() {
+  SPR.cave = paintCave();
+  SPR.mat = paintMat();
+  SPR.fallenFruit = paintFallenFruit(21);
+  SPR.fallenFruit2 = paintFallenFruit(37);
+  SPR.scrub = paintScrub(11);
+  SPR.scrub2 = paintScrub(29);
+  SPR.monolith = paintMonolith();
+  SPR.sigil = paintSigil();
+  SPR.palm = paintPalm(11, { H: 56, W: 54, trunkH: 21, lean: 1.2, fronds: 9 });
+  SPR.palm2 = paintPalm(29, { H: 46, W: 48, trunkH: 16, lean: -1.1, fronds: 8 });
+  SPR.palm3 = paintPalm(53, { H: 50, W: 50, trunkH: 19, lean: 0.4, fronds: 10 });
+  SPR.fruitTree = paintCanopyTree(7, { W: 52, H: 50, fruit: true });
+  SPR.fruitTree2 = paintCanopyTree(19, { W: 44, H: 42, fruit: true, fruitColor: '#d9663f', canopyY: 20 });
+  SPR.bush = paintBush(3, { W: 30, H: 20 });
+  SPR.fruitBush = paintBush(13, { W: 28, H: 19, fruit: true });
+  SPR.grass = paintGrass(5);
+  SPR.grass2 = paintGrass(23);
+  SPR.flower = paintFlower(9);
+  SPR.flower2 = paintFlower(41);
+  SPR.rock = paintRock(2, 20);
+  SPR.rockSmall = paintRock(17, 13);
+  SPR.rock3 = paintRock(31, 15);
+  SPR.wreck = paintWreck();
+  SPR.mast = paintMast();
+  SPR.deadTree = paintDeadTree(4);
+  SPR.deadTree2 = paintDeadTree(6);
+  SPR.fern = paintFern(8);
+}
+
+/* ------------------------------------------- 3c. VAX (redrawn, with staff) */
+function buildVaxSprites() {
+  const VAXPAL = Object.assign({}, PAL, { m: '#a06a5a' });
+  // 17 wide. Straw fruit-basket hat, plum robe, sash, gold hem, long staff.
+  const DOWN = [
+    '......koook......',
+    '.....kooyook.....',
+    '....koooyooook...',
+    '..kkkoooooooookk.',
+    '..ktTttttttttTk..',
+    '..kttttttttttttk.',
+    '...kkkkkkkkkkk...',
+    '....kkkkkkkkk....',
+    '....khsssssshk...',
+    '....kssssssssk...',
+    '....kskksskksk...',
+    '....kssssssssk...',
+    '....ksssnnsssk...',
+    '.....kssssssk....',
+    '...kkkppppppkkk..',
+    '..kqqqppppppqqqk.',
+    '..kqqqppppppqqqk.',
+    '..kPpPyyyyyyPpPk.',
+    '...kpppppppppkk..',
+    '...ksspppppssk...',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kPPPPPPPPPPPk..',
+    '..kkkkkkkkkkkkk..',
+    '....kssk.kssk....',
+    '....kssk.kssk....',
+    '....kkkk.kkkk....'
+  ];
+  const UP = [
+    '......koook......',
+    '.....kooyook.....',
+    '....koooyooook...',
+    '..kkkoooooooookk.',
+    '..ktTttttttttTk..',
+    '..kttttttttttttk.',
+    '...kkkkkkkkkkk...',
+    '....kkkkkkkkk....',
+    '....khhhhhhhhk...',
+    '....khhhhhhhhk...',
+    '....khhhhhhhhk...',
+    '....khhhhhhhhk...',
+    '....khhhhhhhhk...',
+    '.....khhhhhhk....',
+    '...kkkppppppkkk..',
+    '..kqqqppppppqqqk.',
+    '..kqqqppppppqqqk.',
+    '..kPpPyyyyyyPpPk.',
+    '...kpppppppppkk..',
+    '...ksspppppssk...',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kPPPPPPPPPPPk..',
+    '..kkkkkkkkkkkkk..',
+    '....kssk.kssk....',
+    '....kssk.kssk....',
+    '....kkkk.kkkk....'
+  ];
+  const RIGHT = [
+    '......koook......',
+    '.....kooyook.....',
+    '...koooyooooo k..'.replace(' ',''),
+    '..kkooooooooookk.',
+    '..kttttttttttttk.',
+    '...kkkkkkkkkkk...',
+    '....kkkkkkkkk....',
+    '....khhhhhhhhk...',
+    '....khhhhhssk....',
+    '....khhsssssk....',
+    '....khksssskk....',
+    '....khssssssk....',
+    '....khssnnsssk...',
+    '.....khsssssk....',
+    '...kkkppppppkkk..',
+    '..kqqqppppppppk..',
+    '..kqqqppppppppk..',
+    '..kPpPpyyyyyPpk..',
+    '...kppppppppkk...',
+    '...ksspppppssk...',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kpppppppppppk..',
+    '..kPPPPPPPPPPPk..',
+    '..kkkkkkkkkkkkk..',
+    '...ksssk.kssssk..',
+    '...ksssk.kssssk..',
+    '...kkkkk.kkkkkk..'
+  ];
+  const addStaff = (canvas) => {
+    const x = canvas.getContext('2d');
+    x.imageSmoothingEnabled = false;
+    const sx = 15;
+    // pole
+    for (let y = 8; y < 29; y++) {
+      x.fillStyle = '#5a2f14'; x.fillRect(sx, y, 2, 1);
+      x.fillStyle = '#a8552e'; x.fillRect(sx, y, 1, 1);
+    }
+    // carved fruit knob
+    x.fillStyle = '#4a2f1c'; x.fillRect(sx - 1, 4, 4, 4);
+    x.fillStyle = '#e9a23b'; x.fillRect(sx - 1, 5, 3, 3);
+    x.fillStyle = '#ffd98a'; x.fillRect(sx - 1, 5, 1, 1);
+    x.fillStyle = '#37774a'; x.fillRect(sx + 1, 2, 2, 2);
+    x.fillStyle = '#4f9d5d'; x.fillRect(sx + 1, 2, 1, 1);
+    // binding
+    x.fillStyle = '#3c2a1c'; x.fillRect(sx - 1, 12, 4, 1); x.fillRect(sx - 1, 26, 4, 1);
+  };
+  const variants = {
+    v_down0: sheet(DOWN, VAXPAL),
+    v_down1: sheet(mutate(DOWN, {
+      0: '.................', 1: '.......kkk.......', 2: '......koook......',
+      3: '.....kooyook.....', 4: '....kkoooookk....', 5: '..kkkkkkkkkkkkk..',
+      6: '..ktTttttttttTk..', 7: '..ktTttttttttTk..', 8: '...kkkkkkkkkkk...',
+      9: '....khsssssshk...',
+      27: '...kssk..kssk....', 28: '...kkkk..kkkk....'
+    }), VAXPAL),
+    v_up0: sheet(UP, VAXPAL),
+    v_up1: sheet(mutate(UP, {
+      0: '.................', 1: '.......kkk.......', 2: '......koook......',
+      3: '.....kooyook.....', 4: '....kkoooookk....', 5: '..kkkkkkkkkkkkk..',
+      6: '..ktTttttttttTk..', 7: '..ktTttttttttTk..', 8: '...kkkkkkkkkkk...',
+      9: '....khhhhhhhhk...',
+      27: '...kssk..kssk....', 28: '...kkkk..kkkk....'
+    }), VAXPAL),
+    v_right0: sheet(RIGHT, VAXPAL),
+    v_right1: sheet(mutate(RIGHT, {
+      0: '.................', 1: '.......kkk.......', 2: '......koook......',
+      3: '.....kooyook.....', 4: '....kkoooookk....', 5: '..kkkkkkkkkkkkk..',
+      6: '..ktTttttttttTk..', 7: '..ktTttttttttTk..', 8: '...kkkkkkkkkkk...',
+      9: '....khhhhhhsk....',
+      27: '..ksssk.kssssk...', 28: '..kkkkk.kkkkkk...'
+    }), VAXPAL)
+  };
+  // talking poses: a small head bob + open mouth
+  variants.v_down_alt = sheet(mutate(DOWN, {
+    0: '.................', 1: '.......kkk.......', 2: '......koook......',
+    3: '.....kooyook.....', 4: '....kkoooookk....', 5: '..kkkkkkkkkkkkk..',
+    6: '..ktTttttttttTk..', 7: '..ktTttttttttTk..',
+    8: '...kkkkkkkkkkk...',
+    9: '....khsssssshk...',
+    10: '....kssssssssk...',
+    11: '....kskksskksk...',
+    12: '....kssssssssk...',
+    13: '....kssnnnnssk...'
+  }), VAXPAL);
+  variants.v_up_alt = sheet(mutate(UP, {
+    0: '.................', 1: '.......kkk.......', 2: '......koook......',
+    3: '.....kooyook.....', 4: '....kkoooookk....', 5: '..kkkkkkkkkkkkk..',
+    6: '..ktTttttttttTk..', 7: '..ktTttttttttTk..',
+    8: '...kkkkkkkkkkk...',
+    9: '....khhhhhhhhk...', 10: '....khhhhhhhhk...'
+  }), VAXPAL);
+  variants.v_right_alt = sheet(mutate(RIGHT, {
+    0: '.................', 1: '.......kkk.......', 2: '......koook......',
+    3: '.....kooyook.....', 4: '....kkoooookk....', 5: '..kkkkkkkkkkkkk..',
+    6: '..ktTttttttttTk..', 7: '..ktTttttttttTk..',
+    8: '...kkkkkkkkkkk...',
+    9: '....khhhhhhsk....', 10: '....khhsssssk....',
+    11: '....khksssskk....', 12: '....khssssssk....', 13: '....khssnnnnsk...'
+  }), VAXPAL);
+  for (const k in variants) {
+    const c = variants[k];
+    addStaff(c);
+    SPR[k] = c;
+  }
+}
+
+/* ---------------------------------------------------------------- 4. AUDIO */
+// Everything is synthesised with WebAudio: no files, no network, and any
+// failure here is swallowed so it can never break the game.
+const Audio2 = (() => {
+  let ctx = null, master = null, ambient = null, enabled = true, started = false;
+  const nodes = {};
+
+  function init() {
+    if (ctx) return true;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      ctx = new AC();
+      master = ctx.createGain();
+      master.gain.value = enabled ? 0.55 : 0;
+      master.connect(ctx.destination);
+    } catch (e) { ctx = null; return false; }
+    return true;
+  }
+  function resume() {
+    if (!ctx) init();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+  }
+  function noiseBuffer(seconds = 2, brown = true) {
+    const len = Math.floor(ctx.sampleRate * seconds);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const w = Math.random() * 2 - 1;
+      if (brown) { last = (last + 0.02 * w) / 1.02; d[i] = last * 3.2; }
+      else d[i] = w * 0.6;
+    }
+    return buf;
+  }
+
+  function startAmbience() {
+    if (!init() || started) return;
+    started = true;
+    try {
+      // --- ocean: brown noise, low-passed, with slow swell LFO
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuffer(4, true); src.loop = true;
+      const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 520;
+      const wg = ctx.createGain(); wg.gain.value = 0.0;
+      src.connect(lp); lp.connect(wg); wg.connect(master);
+      const lfo = ctx.createOscillator(); lfo.frequency.value = 0.11;
+      const lfoGain = ctx.createGain(); lfoGain.gain.value = 0.16;
+      lfo.connect(lfoGain); lfoGain.connect(wg.gain);
+      wg.gain.value = 0.22;
+      src.start(); lfo.start();
+      // --- wind: band-passed white noise
+      const src2 = ctx.createBufferSource();
+      src2.buffer = noiseBuffer(3, false); src2.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 900; bp.Q.value = 0.6;
+      const wg2 = ctx.createGain(); wg2.gain.value = 0.012;
+      const lfo2 = ctx.createOscillator(); lfo2.frequency.value = 0.07;
+      const lg2 = ctx.createGain(); lg2.gain.value = 0.010;
+      lfo2.connect(lg2); lg2.connect(wg2.gain);
+      src2.connect(bp); bp.connect(wg2); wg2.connect(master);
+      src2.start(); lfo2.start();
+      nodes.ocean = wg; nodes.wind = wg2;
+    } catch (e) { /* ambience is optional */ }
+  }
+
+  function blip(freq, dur, type, vol, slideTo) {
+    if (!ctx || !enabled) return;
+    try {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type || 'square';
+      o.frequency.value = freq;
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, ctx.currentTime + dur);
+      g.gain.value = 0;
+      g.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+      o.connect(g); g.connect(master);
+      o.start(); o.stop(ctx.currentTime + dur + 0.02);
+    } catch (e) {}
+  }
+  function burst(dur, freq, q, vol, type) {
+    if (!ctx || !enabled) return;
+    try {
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuffer(0.4, false);
+      const f = ctx.createBiquadFilter(); f.type = type || 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(vol, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+      src.connect(f); f.connect(g); g.connect(master);
+      src.start(); src.stop(ctx.currentTime + dur + 0.02);
+    } catch (e) {}
+  }
+
+  let stepSide = 0;
+  return {
+    init, resume, startAmbience,
+    get ctx() { return ctx; },
+    setEnabled(on) {
+      enabled = on;
+      if (master) master.gain.value = on ? 0.55 : 0;
+      if (on) { resume(); startAmbience(); }
+    },
+    get enabled() { return enabled; },
+    footstep(inSand) {
+      if (!enabled) return;
+      stepSide = 1 - stepSide;
+      burst(0.075, inSand ? 620 : 320, 1.4, inSand ? 0.035 : 0.025);
+    },
+    type() { blip(520 + Math.random() * 40, 0.025, 'square', 0.012); },
+    advance() { blip(660, 0.05, 'triangle', 0.03, 880); },
+    select() { blip(760, 0.07, 'triangle', 0.035, 980); },
+    examine() { blip(440, 0.10, 'triangle', 0.035, 660); },
+    talk() { blip(392, 0.09, 'square', 0.025, 523); },
+    stepObj() { blip(523, 0.12, 'triangle', 0.04, 784); },
+    warn() {
+      // restrained, low, unresolved chord — used once during Vax's warning
+      if (!ctx || !enabled) return;
+      try {
+        const freqs = [110, 130.81, 164.81, 220];
+        const t0 = ctx.currentTime;
+        freqs.forEach((f, i) => {
+          const o = ctx.createOscillator(), g = ctx.createGain();
+          o.type = i < 2 ? 'sine' : 'triangle';
+          o.frequency.value = f;
+          g.gain.setValueAtTime(0, t0);
+          g.gain.linearRampToValueAtTime(0.055 - i * 0.008, t0 + 1.1);
+          g.gain.linearRampToValueAtTime(0.0001, t0 + 6.5);
+          const trem = ctx.createOscillator(); trem.frequency.value = 0.9 + i * 0.13;
+          const tg = ctx.createGain(); tg.gain.value = 0.012;
+          trem.connect(tg); tg.connect(g.gain); trem.start(t0); trem.stop(t0 + 6.6);
+          o.connect(g); g.connect(master);
+          o.start(t0); o.stop(t0 + 6.6);
+        });
+      } catch (e) {}
+    },
+    moan() {
+      // a distant, low, unplaceable sound from the treeline
+      if (!ctx || !enabled) return;
+      blip(72, 2.6, 'sine', 0.055, 48);
+      blip(108, 2.1, 'triangle', 0.018, 74);
+      burst(2.0, 220, 0.9, 0.012, 'lowpass');
+    },
+    bird() {
+      if (!ctx || !enabled) return;
+      const base = 1400 + Math.random() * 900;
+      blip(base, 0.06, 'sine', 0.018, base * 1.35);
+      setTimeout(() => blip(base * 0.92, 0.05, 'sine', 0.014, base * 1.2), 95);
+    }
+  };
+})();
+
+/* ----------------------------------------------------------------- 5. WORLD */
+// The island is a hand-designed 704x544 map rendered once to a terrain canvas;
+// props, collision and interactions are data so the island is easy to edit.
+const MAP = { w: 704, h: 544 };
+
+function hash2(x, y) {
+  let h = x * 374761393 + y * 668265263;
+  h = (h ^ (h >> 13)) * 1274126177;
+  return ((h ^ (h >> 16)) >>> 0) / 4294967296;
+}
+function shoreY(x) {
+  return 392 + 18 * Math.sin(x * 0.013) + 8 * Math.sin(x * 0.037 + 2.0);
+}
+function grassLineY(x) {
+  return shoreY(x) - 70 + 14 * Math.sin(x * 0.021 + 1.1) + 7 * Math.sin(x * 0.063);
+}
+function forestLineY(x) {
+  return 150 + 10 * Math.sin(x * 0.021) + 5 * Math.sin(x * 0.07 + 1.0);
+}
+
+// main trail (beach -> clearing) and the darker trail north of the clearing
+const PATH1 = [[318, 404], [330, 366], [344, 330], [362, 308], [400, 296], [440, 288], [470, 270]];
+const PATHB = [[400, 296], [366, 294], [330, 292], [296, 292]];   // branch to Vax's clearing
+const PATH2 = [[470, 270], [458, 240], [440, 208], [426, 176]];   // old north trail
+const ALL_PATHS = [PATH1, PATHB, PATH2];
+
+function distToSeg(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+  t = clamp(t, 0, 1);
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+function distToAnyPath(px, py, r) {
+  for (const p of ALL_PATHS) if (distToPath(px, py, p) < r) return true;
+  return false;
+}
+function distToPath(px, py, pts) {
+  let d = 1e9;
+  for (let i = 0; i < pts.length - 1; i++) {
+    d = Math.min(d, distToSeg(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]));
+  }
+  return d;
+}
+
+// Terrain id per pixel: 0 deep water, 1 shallow water, 2 wet sand, 3 sand,
+// 4 grass, 5 path, 6 dark forest floor
+function terrainId(x, y) {
+  const sh = shoreY(x);
+  if (y > sh + 26) return 0;
+  if (y > sh) return 1;
+  if (y > sh - 6) return 2;
+  const gl = grassLineY(x);
+  if (y > gl) {
+    if (distToAnyPath(x, y, 11 + 2 * Math.sin(y * 0.2))) return 5;
+    return 3;
+  }
+  if (y > forestLineY(x)) {
+    if (distToAnyPath(x, y, 10)) return 5;
+    return 4;
+  }
+  return 6;
+}
+
+const SOLID_TERRAIN = { 0: 1, 1: 1, 6: 1 };
+const isWaterId = (id) => id === 0 || id === 1;
+
+const TERRAIN_COLORS = {
+  0: [26, 62, 92], 1: [42, 104, 128], 2: [214, 194, 152],
+  3: [232, 210, 165], 4: [86, 143, 96], 5: [196, 172, 130], 6: [40, 44, 52]
+};
+
+const World = {
+  solidTiles: null,
+  terrainCanvas: null,
+  props: [],
+  vax: null,
+  examinables: [],
+
+  build() {
+    // ---- terrain image (per-pixel, deterministic)
+    const { c, x: tctx } = makeCanvas(MAP.w, MAP.h);
+    const img = tctx.createImageData(MAP.w, MAP.h);
+    const d = img.data;
+    for (let y = 0; y < MAP.h; y++) {
+      for (let xx = 0; xx < MAP.w; xx++) {
+        const id = terrainId(xx, y);
+        let col = TERRAIN_COLORS[id];
+        const n = hash2(xx, y);
+        const n2 = hash2(xx >> 2, y >> 2);
+        let r = col[0], g = col[1], b = col[2];
+        const amp = (id === 0 || id === 1) ? 10 : 14;
+        const j = (n - 0.5) * amp;
+        r += j; g += j; b += j;
+        // gentle large-scale mottling
+        const m = (n2 - 0.5) * 10;
+        r += m; g += m; b += m;
+        if (id === 4 || id === 6) { g += 6; b -= 4; }
+        if (id === 2) { r += 6; g += 2; }
+        const i = (y * MAP.w + xx) * 4;
+        d[i] = clamp(r, 0, 255); d[i + 1] = clamp(g, 0, 255); d[i + 2] = clamp(b, 0, 255); d[i + 3] = 255;
+      }
+    }
+    tctx.putImageData(img, 0, 0);
+
+    // ---- texture details on top of the flat terrain
+    for (let y = 0; y < MAP.h; y++) {
+      for (let xx = 0; xx < MAP.w; xx++) {
+        const id = terrainId(xx, y);
+        const h = hash2(xx * 7 + 3, y * 13 + 5);
+        if (id === 3 || id === 2) {
+          if (h > 0.965) { tctx.fillStyle = h > 0.99 ? '#cbb489' : '#f6e0b8'; tctx.fillRect(xx, y, 1, 1); }
+        } else if (id === 4) {
+          if (h > 0.95) { tctx.fillStyle = h > 0.985 ? '#4e8b5c' : '#a2c47a'; tctx.fillRect(xx, y, 1, 2); }
+        } else if (id === 5) {
+          if (h > 0.955) { tctx.fillStyle = '#b09a74'; tctx.fillRect(xx, y, 1, 1); }
+        } else if (id === 1) {
+          if (h > 0.985) { tctx.fillStyle = '#7fd0c4'; tctx.fillRect(xx, y, 2, 1); }
+        } else if (id === 6) {
+          if (h > 0.955) { tctx.fillStyle = '#333a45'; tctx.fillRect(xx, y, 2, 1); }
+        }
+      }
+    }
+    // shoreline foam band
+    for (let xx = 0; xx < MAP.w; xx++) {
+      const sh = Math.round(shoreY(xx));
+      const wob = Math.sin(xx * 0.09) * 1.5;
+      for (let k = 0; k < 4; k++) {
+        const yy = Math.round(sh - 2 + wob + k);
+        const a = 1 - k * 0.22;
+        tctx.fillStyle = `rgba(233,249,240,${0.30 * a})`;
+        tctx.fillRect(xx, yy, 1, 1);
+      }
+    }
+    this.terrainCanvas = c;
+
+    // ---- collision grid (8px cells for slightly smoother shorelines)
+    const CELL = 8;
+    const gw = Math.ceil(MAP.w / CELL), gh = Math.ceil(MAP.h / CELL);
+    const grid = new Uint8Array(gw * gh);
+    for (let cy = 0; cy < gh; cy++) {
+      for (let cx = 0; cx < gw; cx++) {
+        let solid = 0;
+        for (let sy = 0; sy < 2 && !solid; sy++) {
+          for (let sx = 0; sx < 2 && !solid; sx++) {
+            const px = cx * CELL + sx * 4 + 2, py = cy * CELL + sy * 4 + 2;
+            if (px < 10 || px > MAP.w - 10) { solid = 1; break; }
+            if (SOLID_TERRAIN[terrainId(px, py)]) solid = 1;
+          }
+        }
+        grid[cy * gw + cx] = solid;
+      }
+    }
+    this.grid = { cell: CELL, w: gw, h: gh, data: grid };
+
+    // ---- props (x,y = ground contact point)
+    this.buildProps();
+  },
+
+  tileSolidAt(px, py) {
+    const g = this.grid;
+    const cx = Math.floor(px / g.cell), cy = Math.floor(py / g.cell);
+    if (cx < 0 || cy < 0 || cx >= g.w || cy >= g.h) return true;
+    return g.data[cy * g.w + cx] === 1;
+  },
+
+  buildProps() {
+    const P = [];
+    const add = (o) => { o.collide = o.collide || null; P.push(o); return o; };
+
+    // ---------- shipwreck debris on the beach
+    add({ spr: 'wreck', x: 168, y: 404, col: { dx: -22, dy: -9, w: 44, h: 9 }, interact: {
+      id: 'wreck', label: 'examine', lines: [
+        { who: 'Sailor', text: "The hull. Or most of it. The sea took the rest, and it isn't giving anything back." },
+        { who: 'Sailor', text: "No mast, no cargo, no way home. Just splinters and salt in my mouth." }
+      ]
+    }});
+    add({ spr: 'mast', x: 108, y: 382, col: { dx: -7, dy: -6, w: 14, h: 6 }, interact: {
+      id: 'mast', label: 'examine', lines: [
+        { who: 'Sailor', text: "A piece of the mast, snapped clean in half. I've never seen a storm do that." },
+        { who: 'Sailor', text: "I'll choose not to think about it for now." }
+      ]
+    }});
+    add({ spr: 'barrel', x: 206, y: 398, col: { dx: -6, dy: -5, w: 12, h: 5 }, interact: {
+      id: 'barrel', label: 'examine', lines: [
+        { who: 'Sailor', text: "A barrel, still sealed. Fresh water, if I'm lucky." },
+        { who: 'Sailor', text: "It's empty. Of course it is." }
+      ]
+    }});
+    add({ spr: 'crate', x: 252, y: 366, col: { dx: -6, dy: -5, w: 12, h: 5 }, interact: {
+      id: 'crate', label: 'examine', lines: [
+        { who: 'Sailor', text: "A crate from the hold. Whatever was inside is out, and probably swimming." }
+      ]
+    }});
+    add({ spr: 'plank', x: 196, y: 430, col: null, interact: null, flat: true });
+    add({ spr: 'plank', x: 300, y: 352, col: null, flat: true, flip: true });
+    add({ spr: 'plank', x: 140, y: 424, col: null, flat: true });
+    add({ spr: 'barrel', x: 100, y: 392, col: { dx: -6, dy: -5, w: 12, h: 5 }, interact: null, flip: true });
+
+    // ---------- palm trees & general vegetation
+    const palms = [
+      [72, 350], [140, 344], [232, 352], [300, 330], [356, 356],
+      [430, 350], [500, 360], [572, 348], [644, 356], [30, 380],
+      [620, 300], [660, 262], [96, 296], [44, 300], [534, 314],
+      [596, 250], [686, 344]
+    ];
+    palms.forEach((p, i) => add({
+      spr: ['palm', 'palm2', 'palm3'][i % 3], x: p[0], y: p[1],
+      col: { dx: -3, dy: -5, w: 6, h: 5 },
+      sway: i
+    }));
+
+    // ---------- fruit trees / bushes (island identity)
+    const fruitTrees = [[210, 300], [268, 286], [368, 274], [520, 268], [616, 330], [150, 262], [660, 200], [470, 200]];
+    fruitTrees.forEach((p, i) => add({
+      spr: i % 2 ? 'fruitTree2' : 'fruitTree', x: p[0], y: p[1],
+      col: { dx: -4, dy: -5, w: 8, h: 5 }, sway: i + 3,
+      interact: i === 2 ? {
+        id: 'fruittree', label: 'examine', lines: [
+          { who: 'Sailor', text: "Round fruit, bright as lanterns. Every tree here is heavy with them." },
+          { who: 'Sailor', text: "Nothing on this island looks hungry. That should be a comfort." },
+          { who: 'Sailor', text: "...It is not." }
+        ]
+      } : {
+        id: 'fruittree' + i, label: 'examine', lines: [
+          { who: 'Sailor', text: "More fruit. Sweet, by the smell of it. The island is practically offering it to me." }
+        ]
+      }
+    }));
+    const bushes = [[176, 316], [232, 330], [330, 300], [392, 316], [462, 306], [546, 292], [588, 330], [118, 330], [410, 246], [500, 240], [560, 236], [640, 286]];
+    bushes.forEach((p, i) => add({
+      spr: i % 3 === 1 ? 'fruitBush' : 'bush', x: p[0], y: p[1],
+      col: { dx: -6, dy: -4, w: 12, h: 4 }, sway: i
+    }));
+
+    // ---------- rocks & shoreline clutter
+    const rocks = [[60, 400], [206, 386], [322, 388], [404, 376], [468, 388], [540, 380], [608, 392], [660, 384], [24, 348], [678, 320], [380, 340], [464, 340]];
+    rocks.forEach((p, i) => {
+      const big = i % 3 === 0;
+      add({
+        spr: big ? 'rock' : (i % 2 ? 'rockSmall' : 'rock3'), x: p[0], y: p[1],
+        col: big ? { dx: -7, dy: -5, w: 14, h: 5 } : { dx: -5, dy: -3, w: 10, h: 3 }
+      });
+    });
+    add({ spr: 'shell', x: 256, y: 366, flat: true });
+    add({ spr: 'shell', x: 344, y: 360, flat: true, flip: true });
+    add({ spr: 'shell', x: 452, y: 356, flat: true });
+    add({ spr: 'starfish', x: 292, y: 372, flat: true });
+    add({ spr: 'starfish', x: 120, y: 400, flat: true, flip: true });
+    
+
+    // ---------- fallen fruit under the orchard trees, beach scrub on the sand
+    [[210, 300], [268, 286], [368, 274], [520, 268], [616, 330], [150, 262], [470, 200]].forEach((p, i) => {
+      add({ spr: i % 2 ? 'fallenFruit2' : 'fallenFruit', x: p[0] + 6, y: p[1] + 4, flat: true });
+    });
+    for (let i = 0; i < 22; i++) {
+      const rng2 = mulberry32(900 + i * 17);
+      const sx = 24 + rng2() * (MAP.w - 48);
+      const sy = 330 + rng2() * 50;
+      if (terrainId(sx, sy) === 3) add({ spr: i % 2 ? 'scrub2' : 'scrub', x: Math.round(sx), y: Math.round(sy), flat: true });
+    }
+
+    // ---------- grass tufts & flowers scattered on the meadow
+    const rng = mulberry32(1234);
+    for (let i = 0; i < 150; i++) {
+      const gx = 20 + rng() * (MAP.w - 40);
+      const gy = 165 + rng() * 220;
+      const id = terrainId(gx, gy);
+      if (id === 4 || id === 3) {
+        const pick = rng();
+        const name = pick > 0.94 ? 'flower2' : pick > 0.87 ? 'flower' : pick > 0.7 ? 'fern' : pick > 0.45 ? 'grass2' : 'grass';
+        add({ spr: name, x: Math.round(gx), y: Math.round(gy), flat: true, sway: i });
+      }
+    }
+
+    // ---------- the ominous edge: a dark treeline blocking the north
+    for (let i = 0; i < 26; i++) {
+      const tx = 18 + i * 26 + (i % 3) * 5;
+      const ty = 154 + Math.sin(i * 1.7) * 6 + (i % 2) * 4;
+      if (tx > 392 && tx < 458) continue; // gap where the north path leaves the island
+      add({ spr: i % 2 ? 'deadTree2' : 'deadTree', x: tx, y: ty, col: { dx: -7, dy: -5, w: 14, h: 5 }, dead: true });
+    }
+    // half-seen standing stone, deep in the trees
+    add({ spr: 'monolith', x: 262, y: 150, dead: true, noShadow: true });
+    // cave mouth, partially hidden behind the trees
+    add({ spr: 'cave', x: 426, y: 162, col: { dx: -9, dy: -4, w: 18, h: 4 }, dead: true, interact: {
+      id: 'cave', label: 'examine', lines: [
+        { who: 'Sailor', text: "A split in the rock, at the top of the old path. Something has worn the ground smooth going in and out." },
+        { who: 'Sailor', text: "The hairs on my arms are standing up. I don't think I'm meant to go up there yet." }
+      ], marker: true }});
+    add({ spr: 'vine', x: 404, y: 154, flat: true, dead: true });
+    add({ spr: 'vine', x: 450, y: 152, flat: true, dead: true });
+
+    // ---------- strange markings in the sand (ambivalent danger sign)
+    add({ spr: 'sigil', x: 566, y: 384, flat: true, interact: {
+      id: 'sigil', label: 'examine', lines: [
+        { who: 'Sailor', text: "Something has been drawn in the sand here. Circles inside circles, pressed deep, like it took effort." },
+        { who: 'Sailor', text: "The tide should have washed it away by now. It hasn't." },
+        { who: 'Sailor', text: "I decide I don't want to touch it." }
+      ], marker: true }});
+    add({ spr: 'pawMark', x: 470, y: 366, flat: true, interact: {
+      id: 'prints', label: 'examine', lines: [
+        { who: 'Sailor', text: "Prints. Large ones, coming out of the grass and going back into it." },
+        { who: 'Sailor', text: "Three toes. Or four. I can't tell, and I'm not sure I'd like the answer." }
+      ], marker: true }});
+    add({ spr: 'pawMark', x: 492, y: 356, flat: true, flip: true });
+
+    // ---------- path sign, lantern post, clearing furniture
+    add({ spr: 'sign', x: 316, y: 322, col: { dx: -5, dy: -4, w: 10, h: 4 }, interact: {
+      id: 'sign', label: 'examine', lines: [
+        { who: 'Sailor', text: "A wooden sign, hand-painted. It reads: 'FRUITS ISLAND — PLEASE DO NOT FEED THE ISLAND.'" },
+        { who: 'Sailor', text: "Underneath, in much smaller letters: 'This is not a joke.'" },
+        { who: 'Sailor', text: "The path here is worn smooth. People walk it a lot." }
+      ]
+    }});
+    add({ spr: 'mat', x: 272, y: 296, flat: true });
+    add({ spr: 'lanternPost', x: 300, y: 280, col: { dx: -4, dy: -3, w: 8, h: 3 }, lantern: true });
+    add({ spr: 'crate', x: 226, y: 316, col: { dx: -6, dy: -5, w: 12, h: 5 }, interact: {
+      id: 'vaxcrate', label: 'examine', lines: [
+        { who: 'Sailor', text: "A crate with 'LEADER' painted on the side, in very careful handwriting." },
+        { who: 'Sailor', text: "Inside: three coconuts and a wooden spoon. Leadership, I suppose." }
+      ]
+    }});
+
+    // ---------- a distant, half-hidden landmark (silhouette on the horizon rock)
+    add({ spr: 'rock', x: 120, y: 214, col: { dx: -8, dy: -5, w: 16, h: 5 }, scale: 2 });
+    add({ spr: 'rock', x: 138, y: 222, col: { dx: -8, dy: -5, w: 16, h: 5 } });
+    add({ spr: 'deadTree', x: 182, y: 200, dead: true, col: { dx: -7, dy: -5, w: 14, h: 5 } });
+    add({ spr: 'deadTree', x: 168, y: 196, dead: true, col: { dx: -7, dy: -5, w: 14, h: 5 }, flip: true });
+
+    this.props = P.filter(p => !p.hide);
+  }
+};
+
+/* -------------------------------------------------------- 5b. WORLD RENDER */
+// 8px water/shore lookup grid so animation does not have to re-derive terrain
+const WaterGrid = { cell: 8, w: 0, h: 0, ids: null };
+function buildWaterGrid() {
+  const cell = 8;
+  WaterGrid.w = Math.ceil(MAP.w / cell);
+  WaterGrid.h = Math.ceil(MAP.h / cell);
+  WaterGrid.ids = new Uint8Array(WaterGrid.w * WaterGrid.h);
+  for (let cy = 0; cy < WaterGrid.h; cy++) {
+    for (let cx = 0; cx < WaterGrid.w; cx++) {
+      WaterGrid.ids[cy * WaterGrid.w + cx] = terrainId(cx * cell + 4, cy * cell + 4);
+    }
+  }
+}
+
+const Vignette = { canvas: null };
+function buildVignette() {
+  const { c, x } = makeCanvas(VW, VH);
+  const g = x.createRadialGradient(VW / 2, VH / 2, VH * 0.30, VW / 2, VH / 2, VH * 0.95);
+  g.addColorStop(0, 'rgba(8,12,20,0)');
+  g.addColorStop(0.65, 'rgba(8,12,20,0.10)');
+  g.addColorStop(1, 'rgba(8,12,20,0.42)');
+  x.fillStyle = g;
+  x.fillRect(0, 0, VW, VH);
+  Vignette.canvas = c;
+}
+
+function drawShadow(ctx, cx, cy, w) {
+  const x = Math.round(cx - w / 2), y = Math.round(cy);
+  ctx.fillStyle = 'rgba(24,30,42,0.22)';
+  ctx.fillRect(x + 1, y, w - 2, 1);
+  ctx.fillRect(x + 2, y + 1, w - 4, 1);
+  ctx.fillStyle = 'rgba(24,30,42,0.13)';
+  ctx.fillRect(x, y, w, 1);
+}
+
+function drawWater(ctx, camX, camY, t) {
+  const cell = WaterGrid.cell;
+  const c0 = Math.floor(camX / cell), c1 = Math.ceil((camX + VW) / cell);
+  const r0 = Math.floor(camY / cell), r1 = Math.ceil((camY + VH) / cell);
+  for (let cy = r0; cy <= r1; cy++) {
+    if (cy < 0 || cy >= WaterGrid.h) continue;
+    for (let cx = c0; cx <= c1; cx++) {
+      if (cx < 0 || cx >= WaterGrid.w) continue;
+      const id = WaterGrid.ids[cy * WaterGrid.w + cx];
+      if (id !== 0 && id !== 1) continue;
+      const wx = cx * cell, wy = cy * cell;
+      const sx = wx - camX, sy = wy - camY;
+      const h = hash2(cx, cy);
+      // rolling highlight dashes
+      const phase = (t * (id === 1 ? 1.4 : 0.85) + h * 6.28);
+      const dx = Math.round(Math.sin(phase) * 3);
+      const dy = Math.round(Math.sin(phase * 0.7 + 1) * 1);
+      if (h > 0.45) {
+        ctx.fillStyle = id === 1 ? 'rgba(126,206,204,0.30)' : 'rgba(78,158,178,0.22)';
+        ctx.fillRect(sx + 3 + dx, sy + 5 + dy, 4, 1);
+      }
+      if (h > 0.86) {
+        ctx.fillStyle = id === 1 ? 'rgba(190,240,232,0.34)' : 'rgba(120,190,200,0.20)';
+        ctx.fillRect(sx + 9 - dx, sy + 10 + dy, 3, 1);
+      }
+    }
+  }
+  // animated foam line following the shoreline
+  const x0 = Math.max(0, Math.floor(camX) - 2);
+  const x1 = Math.min(MAP.w, Math.ceil(camX + VW) + 2);
+  for (let x = x0; x < x1; x += 2) {
+    const sh = shoreY(x);
+    const wave = Math.sin(x * 0.06 + t * 1.7) * 2.2 + Math.sin(x * 0.17 - t * 2.3) * 0.9;
+    const yy = Math.round(sh - 1 + wave);
+    const sy = yy - camY;
+    if (sy < -2 || sy > VH + 2) continue;
+    const a = 0.35 + 0.25 * Math.sin(x * 0.1 + t * 2.2);
+    ctx.fillStyle = `rgba(226,246,242,${a.toFixed(2)})`;
+    ctx.fillRect(x - camX, sy, 2, 1);
+    if ((x + Math.floor(t * 12)) % 16 < 3) {
+      ctx.fillStyle = 'rgba(240,255,250,0.55)';
+      ctx.fillRect(x - camX, sy + 1, 1, 1);
+    }
+  }
+}
+
+// draw a prop sprite with optional sway / flip / scale
+function drawProp(ctx, p, camX, camY, t) {
+  const spr = SPR[p.spr];
+  if (!spr) return;
+  const w = spr.width, h = spr.height;
+  let ox = 0;
+  if (p.sway !== undefined && !p.dead) ox = Math.round(Math.sin(t * 1.1 + p.sway * 1.3) * 0.6 + Math.sin(t * 2.3 + p.sway) * 0.25);
+  let dx = Math.round(p.x - w / 2 - camX + ox);
+  let dy = Math.round(p.y - h - camY);
+  if (!p.flat && !p.noShadow) {
+    drawShadow(ctx, p.x - camX, p.y - camY - 1, Math.max(6, Math.round(w * 0.55)));
+  }
+  if (p.scale === 2) {
+    ctx.drawImage(spr, dx, dy, w * 2, h * 2);
+  } else if (p.flip) {
+    ctx.save();
+    ctx.translate(dx + w, dy);
+    ctx.scale(-1, 1);
+    ctx.drawImage(spr, 0, 0);
+    ctx.restore();
+  } else {
+    ctx.drawImage(spr, dx, dy);
+  }
+}
+
+/* ------------------------------------------------------------ 5c. PLAYER */
+const Player = {
+  x: 240, y: 366, dir: 'down', speed: 68,
+  animT: 0, idleT: 0, moveT: 0, stepT: 0, moving: false,
+  bob: 0,
+
+  reset() {
+    this.x = 240; this.y = 366; this.dir = 'down';
+    this.animT = 0; this.idleT = 0; this.moving = false; this.stepT = 0;
+  },
+  box() { return { x: this.x - 5, y: this.y - 6, w: 10, h: 6 }; },
+  update(dt, input, blocked) {
+    let dx = 0, dy = 0;
+    if (input.left) dx -= 1;
+    if (input.right) dx += 1;
+    if (input.up) dy -= 1;
+    if (input.down) dy += 1;
+    const moving = (dx !== 0 || dy !== 0);
+    this.moving = moving;
+    if (moving) {
+      // direction priority: whichever axis was pressed most recently, else horizontal
+      if (Math.abs(dy) > 0 && Math.abs(dx) > 0) {
+        this.dir = input.lastAxis === 'y' ? (dy > 0 ? 'down' : 'up') : (dx > 0 ? 'right' : 'left');
+      } else if (dy !== 0) this.dir = dy > 0 ? 'down' : 'up';
+      else this.dir = dx > 0 ? 'right' : 'left';
+
+      const len = Math.hypot(dx, dy) || 1;
+      const vx = dx / len * this.speed * dt;
+      const vy = dy / len * this.speed * dt;
+      // axis-separated resolution keeps diagonal movement consistent
+      if (vx !== 0 && !blocked(this.x + vx, this.y)) this.x += vx;
+      if (vy !== 0 && !blocked(this.x, this.y + vy)) this.y += vy;
+
+      this.animT += dt;
+      this.moveT += Math.hypot(vx, vy);
+      this.idleT = 0;
+      this.stepT += dt;
+      if (this.stepT > 0.30) {
+        this.stepT = 0;
+        const id = terrainId(this.x, this.y + 2);
+        Audio2.footstep(id !== 3 && id !== 2);
+      }
+    } else {
+      this.animT = 0;
+      this.idleT += dt;
+    }
+    this.x = clamp(this.x, 12, MAP.w - 12);
+    this.y = clamp(this.y, 12, MAP.h - 12);
+  },
+  frame() {
+    if (this.moving) {
+      const f = Math.floor(this.animT * 8) % 4;
+      return f;
+    }
+    // idle: breathe slowly, blink occasionally
+    return -1;
+  },
+  draw(ctx, camX, camY, t) {
+    let spr;
+    // side sprites are stored once (facing right) and mirrored for left
+    const facing = this.dir === 'left' ? 'right' : this.dir;
+    if (this.moving) {
+      const f = Math.floor(this.animT * 8) % 4;
+      spr = SPR['p_' + facing + f];
+    } else {
+      // subtle 2-frame breath + rare blink
+      const breath = Math.floor(this.idleT / 0.85) % 2;
+      if (this.dir === 'down') {
+        spr = (Math.floor(this.idleT * 0.9) % 7 === 0) ? SPR.p_down_blink : SPR.p_down_idle;
+      } else if (facing === 'right') {
+        spr = (Math.floor(this.idleT * 0.9) % 7 === 0) ? SPR.p_right_blink : SPR.p_right_idle;
+      } else {
+        spr = SPR.p_up_idle;
+      }
+      if (breath === 1) { /* 1px breath handled by sprite choice only */ }
+    }
+    const w = spr.width, h = spr.height;
+    const dx = Math.round(this.x - w / 2 - camX);
+    const dy = Math.round(this.y - h - camY);
+    drawShadow(ctx, this.x - camX, this.y - camY - 1, 11);
+    if (this.dir === 'left') {
+      ctx.save();
+      ctx.translate(dx + w, dy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(spr, 0, 0);
+      ctx.restore();
+    } else {
+      ctx.drawImage(spr, dx, dy);
+    }
+  }
+};
+
+/* ------------------------------------------------------------------ 5d. VAX */
+const Vax = {
+  x: 272, y: 290, dir: 'down', talkT: 0, idleT: 0, speaking: false,
+  box() { return { x: this.x - 7, y: this.y - 6, w: 14, h: 6 }; },
+  face(tx, ty) {
+    const dx = tx - this.x, dy = ty - this.y;
+    if (Math.abs(dx) > Math.abs(dy)) this.dir = dx > 0 ? 'right' : 'left';
+    else this.dir = dy > 0 ? 'down' : 'up';
+  },
+  update(dt) {
+    this.idleT += dt;
+    const p = Player;
+    const d = Math.hypot(p.x - this.x, p.y - this.y);
+    if (!this.speaking) {
+      // turn to watch the sailor when he is close
+      if (d < 96) this.face(p.x, p.y);
+      else if (this.idleT > 6) this.dir = 'down';
+    }
+    this.talkT += dt;
+  },
+  draw(ctx, camX, camY, t) {
+    let spr;
+    const d = this.dir;
+    const facing = d === 'left' ? 'right' : d;
+    if (this.speaking) {
+      // gentle bobbing between two poses while he talks
+      const ph = Math.floor(this.talkT * 4) % 4;
+      spr = ph === 0 ? SPR['v_' + facing + '_alt'] : SPR['v_' + facing + '0'];
+    } else {
+      const ph = Math.floor(this.idleT / 1.15) % 4;
+      if (facing === 'up') spr = ph === 0 ? SPR.v_up1 : SPR.v_up0;
+      else if (facing === 'right') spr = ph === 0 ? SPR.v_right1 : SPR.v_right0;
+      else spr = ph === 0 ? SPR.v_down1 : SPR.v_down0;
+    }
+    const w = spr.width, h = spr.height;
+    const dx = Math.round(this.x - w / 2 - camX);
+    const dy = Math.round(this.y - h - camY);
+    drawShadow(ctx, this.x - camX, this.y - camY - 1, 15);
+    if (d === 'left') {
+      ctx.save();
+      ctx.translate(dx + w, dy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(spr, 0, 0);
+      ctx.restore();
+    } else {
+      ctx.drawImage(spr, dx, dy);
+    }
+  }
+};
+
+/* ------------------------------------------------------- 6. GAME STATE/SETUP */
+const Game = {
+  mode: 'title', // title | play | dialogue | pause | epilogue
+  time: 0,
+  playTime: 0,
+  camera: { x: 0, y: 0 },
+  objective: { id: 'explore', text: 'Explore the shore' },
+  toast: null,
+  toastT: 0,
+  vaxStage: 0,          // 0 = not met, 1 = first talk done
+  askedChoices: {},
+  metVax: false,
+  discoveryT: 0,
+  fade: { a: 0, dir: 0, cb: null },
+  cooldown: 0,
+  menuIndex: 0,
+  pauseIndex: 0,
+  titleT: 0,
+  weather: { birdT: 4, rumbleT: 22 },
+  examCount: 0,
+  endingShown: false,
+  nearest: null,
+
+  reset(full) {
+    Player.reset();
+    Vax.dir = 'down'; Vax.idleT = 0; Vax.speaking = false;
+    this.camera.x = clamp(Player.x - VW / 2, 0, MAP.w - VW);
+    this.camera.y = clamp(Player.y - VH / 2, 0, MAP.h - VH);
+    this.playTime = 0;
+    this.objective = { id: 'explore', text: 'Explore the shore' };
+    this.toast = null; this.toastT = 0;
+    this.vaxStage = 0;
+    this.askedChoices = {};
+    this.metVax = false;
+    this.discoveryT = 0;
+    this.examCount = 0;
+    this.objFlash = 0;
+    this.endingShown = false;
+    this.discoveryReady = false;
+    this.cooldown = 0;
+    this.nearest = null;
+    Dialogue.reset();
+  },
+
+  setObjective(id, text) {
+    if (this.objective.id === id) return;
+    this.objective = { id, text };
+    this.objFlash = 2.8;           // the objective panel glows briefly when it changes
+    Audio2.stepObj();
+  },
+  showToast(text) { this.toast = text; this.toastT = 3.4; },
+
+  startGame() {
+    Audio2.resume(); Audio2.startAmbience();
+    this.reset(true);
+    this.mode = 'play';
+    this.fade = { a: 1, dir: -1, cb: null };
+  },
+  restart() {
+    this.reset(true);
+    this.mode = 'play';
+    this.fade = { a: 1, dir: -1, cb: null };
+  },
+  toTitle() {
+    this.reset(true);
+    this.mode = 'title';
+    this.titleT = 0;
+    this.menuIndex = 0;
+    Dialogue.reset();
+  }
+};
+
+// collision: tiles + every prop box + Vax
+function blockedAt(px, py) {
+  const b = { x: px - 5, y: py - 6, w: 10, h: 6 };
+  // sample the terrain grid at the feet line: corners, centre and mid-sides
+  const pts = [
+    [b.x, py], [b.x + b.w - 1, py], [b.x + b.w / 2, py],
+    [b.x, b.y], [b.x + b.w - 1, b.y], [px, py - 3]
+  ];
+  for (const pt of pts) if (World.tileSolidAt(pt[0], pt[1])) return true;
+  for (const r of World.solidRects) {
+    if (b.x < r.x + r.w && b.x + b.w > r.x && b.y < r.y + r.h && b.y + b.h > r.y) return true;
+  }
+  return false;
+}
+
+function buildCollision() {
+  const rects = [];
+  for (const p of World.props) {
+    if (p.col) rects.push({ x: p.x + p.col.dx, y: p.y + p.col.dy, w: p.col.w, h: p.col.h });
+  }
+  const vb = Vax.box();
+  rects.push(vb);
+  World.solidRects = rects;
+}
+
+/* ------------------------------------- SPRITE ADDITIONS USED BY THE NORTH EDGE */
+/* ------------------------------------------------------------ 7. DIALOGUE */
+const WRAP_CACHE = {};
+function wrapText(text, maxChars) {
+  const key = maxChars + '|' + text;
+  if (WRAP_CACHE[key]) return WRAP_CACHE[key];
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    if (cur === '') cur = w;
+    else if ((cur + ' ' + w).length <= maxChars) cur += ' ' + w;
+    else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  WRAP_CACHE[key] = lines;
+  return lines;
+}
+
+const SPEAKER_COLORS = { Vax: '#cfa6e0', Sailor: '#f0cf8a' };
+const SPEAKER_PORTRAITS = { Vax: 'por_vax', Sailor: 'por_player' };
+
+const Dialogue = {
+  active: false,
+  queue: [],
+  node: null,
+  lines: [],
+  chars: 0,
+  t: 0,
+  typing: false,
+  done: false,
+  choiceOpen: false,
+  choiceIndex: 0,
+  choiceNode: null,
+  onEnd: null,
+  boxAlpha: 0,
+
+  reset() {
+    this.active = false; this.queue = []; this.node = null; this.lines = [];
+    this.chars = 0; this.t = 0; this.typing = false; this.done = false;
+    this.choiceOpen = false; this.choiceIndex = 0; this.choiceNode = null;
+    this.onEnd = null; this.boxAlpha = 0;
+  },
+
+  start(nodes, onEnd) {
+    this.reset();
+    this.active = true;
+    this.queue = nodes.slice();
+    this.onEnd = onEnd || null;
+    this.next();
+  },
+
+  // line helper
+  say(who, text, opts) {
+    opts = opts || {};
+    return { type: 'line', who, text, cue: opts.cue, think: opts.think };
+  },
+
+  next() {
+    if (this.queue.length === 0) { this.end(); return; }
+    const node = this.queue.shift();
+    if (node.type === 'line') {
+      this.node = node;
+      this.lines = wrapText(node.text, 47);
+      this.chars = 0;
+      this.t = 0;
+      this.typing = true;
+      this.done = false;
+      this.choiceOpen = false;
+      if (node.cue === 'warn') Audio2.warn();
+      else Audio2.talk();
+      const total = this.lines.join('').length;
+      this.total = total;
+    } else if (node.type === 'choice') {
+      this.choiceNode = node;
+      this.choiceIndex = 0;
+      this.choiceOpen = true;
+      this.typing = false;
+      Audio2.select();
+    } else if (node.type === 'func') {
+      node.fn();
+      this.next();
+    }
+  },
+
+  advance() {
+    if (!this.active) return;
+    if (this.choiceOpen) { this.pick(); return; }
+    if (this.typing) {
+      // first press completes the line, never skips it
+      this.chars = this.total;
+      this.typing = false;
+      this.done = true;
+      Audio2.advance();
+      return;
+    }
+    Audio2.advance();
+    this.next();
+  },
+
+  moveChoice(delta) {
+    if (!this.choiceOpen || !this.choiceNode) return;
+    const n = this.choiceNode.options.length;
+    this.choiceIndex = (this.choiceIndex + delta + n) % n;
+    Audio2.select();
+  },
+
+  pick() {
+    const node = this.choiceNode;
+    if (!node) return;
+    const opt = node.options[this.choiceIndex];
+    if (!opt) return;
+    Audio2.advance();
+    this.choiceOpen = false;
+    if (opt.key) Game.askedChoices[opt.key] = true;
+    if (opt.once) opt._taken = true;
+    // remaining options get re-offered after this answer, unless this option ends the talk
+    const rest = node.options.filter(o => !o._taken && !(o.key && Game.askedChoices[o.key]));
+    const follow = [];
+    if (opt.nodes) follow.push(...opt.nodes);
+    if (node.repeat && !opt.ends && rest.length > 1) {
+      follow.push({ type: 'choice', options: rest, repeat: true });
+    }
+    this.queue = follow.concat(this.queue);
+    this.next();
+  },
+
+  end() {
+    this.active = false;
+    this.node = null;
+    this.choiceOpen = false;
+    const cb = this.onEnd;
+    this.onEnd = null;
+    if (cb) cb();
+  },
+
+  update(dt) {
+    if (!this.active) return;
+    this.t += dt;
+    this.boxAlpha = Math.min(1, this.boxAlpha + dt * 6);
+    if (this.typing) {
+      const cps = 46;
+      const prev = Math.floor(this.chars);
+      this.chars = Math.min(this.total, this.chars + cps * dt);
+      if (Math.floor(this.chars) > prev && Math.floor(this.chars) % 2 === 0) Audio2.type();
+      if (this.chars >= this.total) { this.typing = false; this.done = true; }
+    }
+  },
+
+  visibleLines() {
+    const all = this.lines;
+    let remaining = Math.floor(this.chars);
+    const out = [];
+    for (const ln of all) {
+      if (remaining <= 0) break;
+      out.push(ln.slice(0, remaining));
+      remaining -= ln.length + 0;
+    }
+    return out;
+  }
+};
+
+/* --------------------------------------------------- VAX'S DIALOGUE SCRIPT */
+function L(who, text, opts) { return Dialogue.say(who, text, opts); }
+function choiceNodes(opts) {
+  return opts.length > 1 ? [{ type: 'choice', options: opts, repeat: true }] : [];
+}
+
+function vaxFirstTalk() {
+  const opts = vaxOptions();
+  return [
+    L('Vax', "Well. You're either very unlucky, or this island has started collecting shipwrecks again."),
+    L('Sailor', "Where... where am I?"),
+    L('Vax', "Fruits Island. I'm Vax. I'm the leader here."),
+    L('Sailor', "You don't sound particularly proud of that."),
+    L('Vax', "It's a title. The island doesn't always listen."),
+    L('Vax', "You came in on the south beach. Your ship did a fair impression of a firework, by the look of it."),
+    L('Vax', "And you were looking for The Forge, weren't you? Sailors with that particular face are always looking for The Forge."),
+    L('Sailor', "How did you know that?"),
+    L('Vax', "Because nobody sails out this far for the fruit."),
+    L('Vax', "The Forge is a long way from here. Whatever carried you off course carried you a very long way."),
+    L('Sailor', "Carried me?"),
+    L('Vax', "Storms don't usually steer.", { cue: 'warn' }),
+    L('Vax', "...Anyway. You should know something before you settle in."),
+    L('Vax', "There's something on this island that we ought to be worrying about a lot more than shipwrecks."),
+    L('Sailor', "What is it?"),
+    L('Vax', "That's the problem. I don't know enough to tell you."),
+    L('Vax', "And the people who do know aren't talking. They smile at me, they pour me tea, and they change the subject."),
+    L('Vax', "I'm the leader. Everyone agrees on that. Nobody listens."),
+    L('Vax', "So: stay off the north path after the light goes. Don't go past the dead trees. And if the island ever starts... humming..."),
+    L('Vax', "...come and find me. I'll be standing somewhere important, looking like I know what to do."),
+    L('Sailor', "That's not very reassuring."),
+    L('Vax', "No. It isn't. But it's honest, and I don't get to be both very often. Ask me something, if you like.")
+  ].concat(choiceNodes(opts));
+}
+
+function vaxOptions() {
+  const all = [
+    {
+      key: 'authority',
+      text: "Why don't you have any authority?",
+      nodes: [
+        L('Vax', "Because authority isn't a hat. You can't just put one on and expect people to duck."),
+        L('Vax', "There was a leader before me. She made the rules. I make the announcements."),
+        L('Sailor', "So who actually runs things?"),
+        L('Vax', "Wonderful question. I would love to have an answer before it becomes urgent.")
+      ]
+    },
+    {
+      key: 'danger',
+      text: "What danger are you talking about?",
+      nodes: [
+        L('Vax', "Something's been taking fruit off the north trees. Not eating it. Taking it, in neat little rows."),
+        L('Vax', "Two of my fishermen won't take their boats past the reef anymore. They won't say why. They just won't."),
+        L('Sailor', "And the circles I saw drawn in the sand?"),
+        L('Vax', "...You saw those."),
+        L('Vax', "Then you understand why I'd rather we talked about shipwrecks.")
+      ]
+    },
+    {
+      key: 'forge',
+      text: "I need to find The Forge.",
+      nodes: [
+        L('Vax', "The Forge."),
+        L('Vax', "It shows up in stories about as often as it shows up in the water."),
+        L('Sailor', "I've been looking for it for a long time."),
+        L('Vax', "Then I hope for your sake that it's real."),
+        L('Vax', "And a little part of me hopes it isn't.")
+      ]
+    },
+    {
+      key: null, ends: true,
+      text: "I'll look around the island.",
+      nodes: [
+        L('Vax', "Go on, then. There's fruit if you're hungry, and the water's clean on this side."),
+        L('Vax', "Don't wander north when the light goes."),
+        L('Sailor', "Thank you, Vax."),
+        L('Vax', "Don't thank me. I'm just the leader.")
+      ]
+    }
+  ];
+  return all.filter(o => !o.key || !Game.askedChoices[o.key]);
+}
+
+function vaxAgainTalk() {
+  const pool = [
+    [
+      L('Vax', "Still here. Still not drowned. I'll take the good news where I find it."),
+      L('Vax', "Keep an eye on the north treeline for me, would you? I'd do it myself, but I'm needed here."),
+      L('Sailor', "You're standing under a lantern."),
+      L('Vax', "It's important work.")
+    ],
+    [
+      L('Vax', "Any luck out there?"),
+      L('Sailor', "The island is... very full of fruit."),
+      L('Vax', "That's how it gets you. First it's charming, then it's quiet, then somebody's rowing away at night."),
+      L('Vax', "Ask me something. I've got nothing else on.")
+    ],
+    [
+      L('Vax', "You're still walking around out there. Good."),
+      L('Vax', "If you find anything up north, don't touch it, don't pick it up, and don't bring it to me."),
+      L('Sailor', "That's very specific."),
+      L('Vax', "It's a policy.")
+    ]
+  ];
+  const pick = pool[Math.min(pool.length - 1, Game.vaxStage - 1)] || pool[0];
+  return pick.concat(choiceNodes(vaxOptions()));
+}
+
+function startVaxDialogue() {
+  Vax.speaking = true;
+  Vax.face(Player.x, Player.y);
+  Game.metVax = true;
+  Game.mode = 'dialogue';
+  const nodes = Game.vaxStage === 0 ? vaxFirstTalk() : vaxAgainTalk();
+  Dialogue.start(nodes, () => {
+    Vax.speaking = false;
+    Game.mode = 'play';
+    Game.cooldown = 0.35;
+    if (Game.vaxStage === 0) {
+      Game.vaxStage = 1;
+      Game.setObjective('warn', 'Stay alert. Something is wrong here.');
+      Game.endingShown = true;
+      Game.mode = 'epilogue';
+      Game.epiT = 0;
+    } else {
+      Vax.face(Player.x, Player.y);
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ 8. UI */
+function drawPanel(ctx, x, y, w, h, alpha) {
+  ctx.globalAlpha = alpha === undefined ? 1 : alpha;
+  // outer dark edge
+  ctx.fillStyle = '#0b141c'; ctx.fillRect(x, y, w, h);
+  // body
+  ctx.fillStyle = '#17252f'; ctx.fillRect(x + 1, y + 1, w - 2, h - 2);
+  // inner bevel
+  ctx.fillStyle = '#243a48'; ctx.fillRect(x + 2, y + 2, w - 4, 1);
+  ctx.fillStyle = '#0f1a22'; ctx.fillRect(x + 2, y + h - 3, w - 4, 1);
+  // gold corner ticks
+  ctx.fillStyle = '#e4c97c';
+  ctx.fillRect(x + 1, y + 1, 2, 1); ctx.fillRect(x + 1, y + 1, 1, 2);
+  ctx.fillRect(x + w - 3, y + 1, 2, 1); ctx.fillRect(x + w - 2, y + 1, 1, 2);
+  ctx.fillRect(x + 1, y + h - 3, 1, 2); ctx.fillRect(x + 1, y + h - 2, 2, 1);
+  ctx.fillRect(x + w - 2, y + h - 3, 1, 2); ctx.fillRect(x + w - 3, y + h - 2, 2, 1);
+  ctx.globalAlpha = 1;
+}
+
+const DBOX = { x: 8, y: VH - 8 - 80, w: VW - 16, h: 80 };
+
+function drawDialogue(ctx, t) {
+  if (!Dialogue.active) return;
+  const a = Dialogue.boxAlpha;
+  const b = DBOX;
+  drawPanel(ctx, b.x, b.y, b.w, b.h, a);
+
+  const node = Dialogue.node;
+  if (node) {
+    // portrait
+    const por = SPEAKER_PORTRAITS[node.who];
+    const hasPor = !!por;
+    if (hasPor) {
+      const spr = SPR[por];
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#0d1820';
+      ctx.fillRect(b.x + 8, b.y + 11, 30, 30);
+      ctx.fillStyle = node.who === 'Vax' ? '#3a2c4e' : '#22394a';
+      ctx.fillRect(b.x + 9, b.y + 12, 28, 28);
+      ctx.drawImage(spr, b.x + 9, b.y + 12);
+      ctx.globalAlpha = 1;
+      // a thin gold frame so the portrait reads as an inset
+      ctx.fillStyle = 'rgba(228,201,124,0.35)';
+      ctx.fillRect(b.x + 8, b.y + 10, 30, 1);
+      ctx.fillRect(b.x + 8, b.y + 41, 30, 1);
+    }
+    // name plate
+    const nameCol = SPEAKER_COLORS[node.who] || '#f4efe4';
+    const nameW = textWidth(node.who) + 12;
+    ctx.fillStyle = '#0b141c';
+    ctx.fillRect(b.x + 6, b.y - 7, nameW, 12);
+    ctx.fillStyle = '#1d3040';
+    ctx.fillRect(b.x + 7, b.y - 6, nameW - 2, 10);
+    drawText(ctx, node.who, b.x + 12, b.y - 4, nameCol);
+
+    // body text
+    const lines = Dialogue.visibleLines();
+    const tx = b.x + (hasPor ? 44 : 12), ty = b.y + 13;
+    for (let i = 0; i < lines.length && i < 5; i++) {
+      drawText(ctx, lines[i], tx, ty + i * 12, '#f2ecdf');
+    }
+    // continue arrow
+    if (!Dialogue.typing && !Dialogue.choiceOpen) {
+      const blink = Math.floor(t * 2.5) % 2 === 0;
+      if (blink) {
+        const ax = b.x + b.w - 14, ay = b.y + b.h - 12;
+        ctx.fillStyle = '#e4c97c';
+        ctx.fillRect(ax, ay, 5, 1);
+        ctx.fillRect(ax + 1, ay + 1, 3, 1);
+        ctx.fillRect(ax + 2, ay + 2, 1, 1);
+      }
+    }
+  }
+
+  // choices
+  if (Dialogue.choiceOpen && Dialogue.choiceNode) {
+    const opts = Dialogue.choiceNode.options;
+    const n = opts.length;
+    const chH = 14, boxH = n * chH + 8;
+    let maxW = 0;
+    opts.forEach(o => maxW = Math.max(maxW, textWidth(o.text)));
+    const boxW = Math.min(VW - 24, maxW + 24);
+    const bx = VW - 12 - boxW, by = b.y - boxH - 6;
+    drawPanel(ctx, bx, by, boxW, boxH, 1);
+    for (let i = 0; i < n; i++) {
+      const oy = by + 5 + i * chH;
+      const sel = i === Dialogue.choiceIndex;
+      if (sel) {
+        ctx.fillStyle = '#2c4356';
+        ctx.fillRect(bx + 3, oy - 2, boxW - 6, 11);
+        ctx.fillStyle = '#e4c97c';
+        ctx.fillRect(bx + 5, oy + 1, 3, 1);
+        ctx.fillRect(bx + 6, oy + 2, 1, 1);
+        ctx.fillRect(bx + 6, oy, 1, 1);
+      }
+      drawText(ctx, opts[i].text, bx + 13, oy, sel ? '#fff6dc' : '#b9c9c6');
+    }
+  }
+}
+
+function drawObjective(ctx, t) {
+  const text = Game.objective.text;
+  const w = Math.min(VW - 16, textWidth(text, 1) + 22);
+  const x = 8, y = 8;
+  const flash = Math.max(0, Math.min(1, Game.objFlash || 0));
+  ctx.globalAlpha = 0.9;
+  drawPanel(ctx, x, y, w, 17);
+  ctx.globalAlpha = 1;
+  if (flash > 0) {
+    const pulse = 0.45 + 0.55 * Math.abs(Math.sin(t * 3.2));
+    ctx.strokeStyle = `rgba(228,201,124,${(flash * pulse).toFixed(2)})`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 16);
+  }
+  // diamond bullet
+  ctx.fillStyle = flash > 0 ? '#ffe9a8' : '#e4c97c';
+  ctx.fillRect(x + 7, y + 8, 3, 1);
+  ctx.fillRect(x + 8, y + 7, 1, 3);
+  drawText(ctx, text, x + 14, y + 6, flash > 0 ? '#fff4d2' : '#eae3d2');
+}
+
+function drawPrompt(ctx, t) {
+  const target = Game.nearest;
+  if (!target || Game.mode !== 'play') return;
+  const label = target.kind === 'vax' ? 'Press E to talk' : 'Press E to examine';
+  const w = textWidth(label) + 14;
+  const bx = Math.round(target.sx - w / 2);
+  const by = Math.round(target.sy - 26);
+  const alpha = 0.82 + Math.sin(t * 3) * 0.08;
+  ctx.globalAlpha = alpha;
+  drawPanel(ctx, bx, by, w, 14);
+  ctx.globalAlpha = 1;
+  drawText(ctx, label, bx + 7, by + 4, '#ffe9b0');
+}
+
+function drawToast(ctx) {
+  if (!Game.toast || Game.toastT <= 0) return;
+  const a = Math.min(1, Math.min(Game.toastT, 3.4 - Game.toastT) * 3);
+  const w = textWidth(Game.toast) + 20;
+  const x = Math.round((VW - w) / 2), y = 30;
+  ctx.globalAlpha = clamp(a, 0, 1);
+  drawPanel(ctx, x, y, w, 17);
+  drawText(ctx, Game.toast, x + 10, y + 6, '#d8f0e6');
+  ctx.globalAlpha = 1;
+}
+
+/* ------------------------------------------------------------ TITLE SCREEN */
+const STARS = (() => {
+  const r = mulberry32(77), s = [];
+  for (let i = 0; i < 70; i++) s.push({ x: Math.floor(r() * VW), y: Math.floor(r() * 105), p: r() * 6.28, b: 0.35 + r() * 0.65 });
+  return s;
+})();
+
+function drawTitle(ctx, t) {
+  // sky
+  const g = ctx.createLinearGradient(0, 0, 0, 145);
+  g.addColorStop(0, '#0d1526');
+  g.addColorStop(0.45, '#1d2a44');
+  g.addColorStop(0.78, '#4a4258');
+  g.addColorStop(1, '#a2685a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, VW, 150);
+
+  // stars
+  for (const s of STARS) {
+    const tw = 0.55 + 0.45 * Math.sin(t * 1.4 + s.p);
+    ctx.globalAlpha = clamp(s.b * tw, 0, 1);
+    ctx.fillStyle = '#dfe8ff';
+    ctx.fillRect(s.x, s.y, 1, 1);
+    if (s.b > 0.85 && tw > 0.9) ctx.fillRect(s.x - 1, s.y, 3, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  // moon
+  ctx.fillStyle = '#f3e6c4';
+  ctx.beginPath(); ctx.arc(320, 42, 13, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = '#e2d3ae';
+  ctx.beginPath(); ctx.arc(315, 38, 3, 0, 6.2832); ctx.fill();
+  ctx.beginPath(); ctx.arc(324, 47, 2, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = 'rgba(243,230,196,0.10)';
+  ctx.beginPath(); ctx.arc(320, 42, 22, 0, 6.2832); ctx.fill();
+
+  // sea
+  const sea = ctx.createLinearGradient(0, 140, 0, VH);
+  sea.addColorStop(0, '#20455f');
+  sea.addColorStop(1, '#0c1c2c');
+  ctx.fillStyle = sea; ctx.fillRect(0, 140, VW, VH - 140);
+
+  // moon reflection
+  for (let i = 0; i < 26; i++) {
+    const y = 146 + i * 2.6;
+    const w = 18 + Math.sin(t * 1.2 + i * 0.7) * 7;
+    const a = 0.22 * (1 - i / 30) * (0.6 + 0.4 * Math.sin(t * 2 + i));
+    ctx.fillStyle = `rgba(243,230,196,${clamp(a, 0, 1).toFixed(3)})`;
+    ctx.fillRect(Math.round(320 - w / 2 + Math.sin(t + i) * 2), Math.round(y), Math.round(w), 1);
+  }
+  // wave dashes
+  for (let i = 0; i < 90; i++) {
+    const h = hash2(i, 3);
+    const y = 148 + Math.floor(h * 66);
+    const drift = ((t * (6 + h * 10) + h * 400) % (VW + 40)) - 20;
+    const x = Math.round(drift);
+    ctx.fillStyle = `rgba(150,205,215,${(0.10 + h * 0.14).toFixed(2)})`;
+    ctx.fillRect(x, y, 3 + Math.floor(h * 6), 1);
+  }
+
+  // island silhouette (column-based so the edges stay pixel-perfect)
+  const islandY = 154;
+  const cx = 182;
+  for (let x = 0; x < VW; x++) {
+    const d = Math.abs(x - cx);
+    let hgt = 0;
+    if (d < 172) hgt = Math.round(30 * Math.cos((d / 172) * 1.45) + Math.sin(x * 0.06) * 2.5);
+    if (hgt <= 0) continue;
+    ctx.fillStyle = '#101a24';
+    ctx.fillRect(x, islandY - hgt, 1, hgt + 3);
+    ctx.fillStyle = '#16242e';
+    ctx.fillRect(x, islandY - hgt, 1, 2);
+  }
+  // palm silhouettes on the title island
+  const palmAt = (px, py, s) => {
+    const sway = Math.sin(t * 0.9 + px) * 1.5;
+    ctx.fillStyle = '#0c141c';
+    for (let i = 0; i < 10 * s; i++) {
+      const yy = Math.round(py - i);
+      const xx = Math.round(px + Math.sin(i * 0.14) * 2.2 * s + sway * (i / (10 * s)));
+      ctx.fillRect(xx, yy, 1 + (s > 1.2 ? 1 : 0), 1);
+    }
+    const topX = px + Math.sin(10 * s * 0.14) * 2.2 * s + sway;
+    for (let a = 0; a < 7; a++) {
+      const ang = -Math.PI * 0.9 + a * 0.32;
+      for (let l = 1; l < 8 * s; l++) {
+        const lx = Math.round(topX + Math.cos(ang) * l * 0.9);
+        const ly = Math.round(py - 10 * s + Math.sin(ang) * l * 0.55 + l * l * 0.035);
+        ctx.fillRect(lx, ly, 1, 1);
+      }
+    }
+  };
+  palmAt(140, 132, 1.35);
+  palmAt(196, 136, 1.05);
+  palmAt(104, 139, 0.9);
+  palmAt(230, 140, 0.75);
+
+  // little wreck silhouette on the shore
+  ctx.fillStyle = '#0c141c';
+  ctx.fillRect(216, 151, 17, 2);
+  ctx.fillRect(220, 148, 9, 3);
+  ctx.fillRect(226, 144, 1, 4);
+
+  // ---- title text
+  const title = 'FRUITS ISLAND';
+  const ts = 4;
+  const tw = textWidth(title, ts);
+  const tx = Math.round((VW - tw) / 2);
+  const ty = 36;
+  for (const o of [[-2, 0], [2, 0], [0, -2], [0, 2], [-2, -2], [2, 2], [2, -2], [-2, 2]]) {
+    drawText(ctx, title, tx + o[0], ty + o[1], '#1a1208', ts);
+  }
+  drawText(ctx, title, tx, ty, '#f2cf7d', ts);
+  drawText(ctx, title, tx, ty + 1, '#e0b25f', ts);
+  // shine sweep
+  ctx.globalAlpha = 0.22;
+  drawText(ctx, title, tx, ty, '#fff4cf', ts);
+  ctx.globalAlpha = 1;
+
+  const sub = 'A little island with a big problem.';
+  const sw = textWidth(sub);
+  drawText(ctx, sub, Math.round((VW - sw) / 2), ty + 40, '#c9b7a4', 1, '#0b1218');
+  // little divider
+  ctx.fillStyle = '#e4c97c';
+  ctx.fillRect(Math.round(VW / 2) - 26, ty + 52, 52, 1);
+  ctx.fillRect(Math.round(VW / 2) - 2, ty + 51, 2, 3);
+
+  // menu
+  if (Game.titleScreen === 'menu') {
+    const items = ['Start Game', 'Controls', 'Sound: ' + (Audio2.enabled ? 'On' : 'Off')];
+    const bw = 148, bh = items.length * 15 + 12;
+    const bx = Math.round((VW - bw) / 2), by = 152;
+    drawPanel(ctx, bx, by, bw, bh);
+    items.forEach((it, i) => {
+      const sel = i === Game.menuIndex;
+      const y = by + 8 + i * 15;
+      if (sel) {
+        ctx.fillStyle = '#2a4152'; ctx.fillRect(bx + 3, y - 2, bw - 6, 12);
+        ctx.fillStyle = '#e4c97c';
+        ctx.fillRect(bx + 8, y + 2, 4, 1);
+        ctx.fillRect(bx + 9, y + 1, 1, 1);
+        ctx.fillRect(bx + 9, y + 3, 1, 1);
+      }
+      drawText(ctx, it, bx + 18, y, sel ? '#fff6dc' : '#a9bcbb');
+    });
+  } else {
+    // controls panel
+    const bw = 258, bh = 110, bx = Math.round((VW - bw) / 2), by = 148;
+    drawPanel(ctx, bx, by, bw, bh);
+    const rows = [
+      ['WASD / ARROWS', 'Walk'],
+      ['E / ENTER', 'Talk and examine'],
+      ['E / ENTER', 'Advance dialogue'],
+      ['ESC', 'Pause menu'],
+      ['M', 'Mute sound']
+    ];
+    drawText(ctx, 'CONTROLS', bx + 12, by + 9, '#e4c97c');
+    rows.forEach((r, i) => {
+      drawText(ctx, r[0], bx + 12, by + 24 + i * 13, '#dff0e8');
+      drawText(ctx, r[1], bx + 110, by + 24 + i * 13, '#93a9a8');
+    });
+    drawText(ctx, 'Press E or ESC to go back', bx + 12, by + bh - 13, '#6f8585');
+  }
+
+  if (Game.embedded) {
+    const hint = 'Click the screen once, then use the keyboard';
+    drawText(ctx, hint, Math.round((VW - textWidth(hint)) / 2), VH - 14, 'rgba(190,214,214,0.55)');
+  }
+  ctx.fillStyle = 'rgba(150,180,190,0.25)';
+  ctx.fillRect(0, VH - 1, VW, 1);
+}
+
+function drawPause(ctx, t) {
+  ctx.fillStyle = 'rgba(8,14,20,0.62)';
+  ctx.fillRect(0, 0, VW, VH);
+  const items = ['Resume', 'Restart', 'Return to Title', 'Sound: ' + (Audio2.enabled ? 'On' : 'Off')];
+  const bw = 176, bh = items.length * 15 + 26;
+  const bx = Math.round((VW - bw) / 2), by = Math.round((VH - bh) / 2);
+  drawPanel(ctx, bx, by, bw, bh);
+  drawText(ctx, 'PAUSED', bx + 12, by + 9, '#e4c97c');
+  ctx.fillStyle = '#2a4152';
+  ctx.fillRect(bx + 8, by + 18, bw - 16, 1);
+  items.forEach((it, i) => {
+    const sel = i === Game.pauseIndex;
+    const y = by + 26 + i * 15;
+    if (sel) {
+      ctx.fillStyle = '#2a4152'; ctx.fillRect(bx + 4, y - 2, bw - 8, 12);
+      ctx.fillStyle = '#e4c97c';
+      ctx.fillRect(bx + 9, y + 2, 4, 1);
+      ctx.fillRect(bx + 10, y + 1, 1, 1);
+      ctx.fillRect(bx + 10, y + 3, 1, 1);
+    }
+    drawText(ctx, it, bx + 18, y, sel ? '#fff6dc' : '#a9bcbb');
+  });
+}
+
+function drawEpilogue(ctx, t) {
+  const a = clamp(Game.epiT * 1.4, 0, 0.86);
+  ctx.fillStyle = `rgba(6,10,16,${a.toFixed(3)})`;
+  ctx.fillRect(0, 0, VW, VH);
+  const fade = clamp((Game.epiT - 0.35) * 1.1, 0, 1);
+  ctx.globalAlpha = fade;
+  // soft band behind the text so it reads over the world
+  const g = ctx.createLinearGradient(0, 44, 0, 186);
+  g.addColorStop(0, 'rgba(8,14,20,0)');
+  g.addColorStop(0.22, 'rgba(8,14,20,0.80)');
+  g.addColorStop(0.78, 'rgba(8,14,20,0.80)');
+  g.addColorStop(1, 'rgba(8,14,20,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 44, VW, 142);
+
+  const title = 'FRUITS ISLAND';
+  drawText(ctx, title, Math.round((VW - textWidth(title, 2)) / 2), 70, '#e8cf92', 2, '#140f08');
+  const sub = 'END OF THE FIRST SLICE';
+  drawText(ctx, sub, Math.round((VW - textWidth(sub)) / 2), 92, '#8fa3a0');
+  ctx.fillStyle = '#e4c97c';
+  ctx.fillRect(Math.round(VW / 2) - 20, 104, 40, 1);
+
+  const lines = [
+    'The beach is quiet. The fruit is sweet.',
+    'Vax is still standing under his lantern,',
+    'looking like he knows what to do.'
+  ];
+  lines.forEach((l, i) => {
+    drawText(ctx, l, Math.round((VW - textWidth(l)) / 2), 116 + i * 12, '#cfdcd6');
+  });
+  if (fade > 0.9) {
+    const blink = Math.floor(t * 1.6) % 2 === 0;
+    if (blink) {
+      const p = 'Press E to keep exploring';
+      drawText(ctx, p, Math.round((VW - textWidth(p)) / 2), 164, '#e4c97c', 1, '#140f08');
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+/* ------------------------------------------------------------- 8b. INPUT */
+const Input = {
+  keys: { up: false, down: false, left: false, right: false },
+  lastAxis: 'x',
+  map: {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    KeyW: 'up', KeyS: 'down', KeyA: 'left', KeyD: 'right'
+  }
+};
+
+function actionFromKey(e) {
+  if (e.code === 'KeyE' || e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') return 'confirm';
+  if (e.code === 'Escape') return 'pause';
+  if (e.code === 'KeyM') return 'mute';
+  return null;
+}
+
+function handleAction(action) {
+  // global
+  if (action === 'mute') {
+    Audio2.setEnabled(!Audio2.enabled);
+    Game.showToast('Sound: ' + (Audio2.enabled ? 'On' : 'Off'));
+    return;
+  }
+  const m = Game.mode;
+  if (m === 'title') {
+    const item = Game.titleScreen === 'controls' ? -1 : Game.menuIndex;
+    if (action === 'confirm') {
+      if (Game.titleScreen === 'controls') { Game.titleScreen = 'menu'; Audio2.select(); return; }
+      Audio2.select();
+      if (item === 0) Game.startGame();
+      else if (item === 1) { Game.titleScreen = 'controls'; }
+      else if (item === 2) Audio2.setEnabled(!Audio2.enabled);
+    } else if (action === 'pause') {
+      if (Game.titleScreen === 'controls') Game.titleScreen = 'menu';
+    } else if (action === 'up' || action === 'down') {
+      if (Game.titleScreen === 'menu') {
+        Game.menuIndex = (Game.menuIndex + (action === 'up' ? -1 : 1) + 3) % 3;
+        Audio2.select();
+      }
+    }
+    return;
+  }
+  if (m === 'play') {
+    if (action === 'confirm') tryInteract();
+    else if (action === 'pause') {
+      Game.mode = 'pause'; Game.pauseIndex = 0; Audio2.select();
+    }
+    return;
+  }
+  if (m === 'dialogue') {
+    if (action === 'confirm') {
+      if (Dialogue.choiceOpen) Dialogue.pick();
+      else Dialogue.advance();
+    } else if (action === 'up') { if (Dialogue.choiceOpen) Dialogue.moveChoice(-1); }
+    else if (action === 'down') { if (Dialogue.choiceOpen) Dialogue.moveChoice(1); }
+    return;
+  }
+  if (m === 'pause') {
+    if (action === 'pause') { Game.mode = 'play'; Audio2.select(); }
+    else if (action === 'confirm') {
+      Audio2.select();
+      if (Game.pauseIndex === 0) Game.mode = 'play';
+      else if (Game.pauseIndex === 1) Game.restart();
+      else if (Game.pauseIndex === 2) Game.toTitle();
+      else if (Game.pauseIndex === 3) Audio2.setEnabled(!Audio2.enabled);
+    } else if (action === 'up' || action === 'down') {
+      Game.pauseIndex = (Game.pauseIndex + (action === 'up' ? -1 : 1) + 4) % 4;
+      Audio2.select();
+    }
+    return;
+  }
+  if (m === 'epilogue') {
+    if (action === 'confirm' && Game.epiT > 1.2) {
+      Game.mode = 'play';
+      Game.cooldown = 0.3;
+      Game.showToast('Objective: ' + Game.objective.text);
+      Audio2.advance();
+    }
+    return;
+  }
+}
+
+window.addEventListener('keydown', (e) => {
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const dir = Input.map[e.code];
+  if (dir) {
+    Input.keys[dir] = true;
+    if (dir === 'up' || dir === 'down') Input.lastAxis = 'y';
+    else Input.lastAxis = 'x';
+    if (e.repeat) return;
+    if (Game.mode === 'title' || Game.mode === 'pause') handleAction(dir);
+    if (Game.mode === 'dialogue') handleAction(dir);
+    return;
+  }
+  if (e.repeat) return;
+  const act = actionFromKey(e);
+  if (act) {
+    e.preventDefault();
+    handleAction(act);
+  }
+});
+window.addEventListener('keyup', (e) => {
+  const dir = Input.map[e.code];
+  if (dir) Input.keys[dir] = false;
+});
+window.addEventListener('blur', () => {
+  Input.keys.up = Input.keys.down = Input.keys.left = Input.keys.right = false;
+  if (Game.mode === 'play') { Game.mode = 'pause'; Game.pauseIndex = 0; }
+});
+window.addEventListener('pointerdown', () => Audio2.resume());
+
+/* ------------------------------------------------------- 8c. INTERACTIONS */
+// Interactables use a cheap AABB-to-point distance so wide objects such as the
+// shipwreck and the cave mouth are forgiving to reach from any side.
+function collectInteractables() {
+  const list = [];
+  for (const p of World.props) {
+    if (!p.interact) continue;
+    const spr = SPR[p.spr];
+    const hw = p.col ? p.col.w / 2 + 3 : 6;
+    const hh = 6;
+    list.push({
+      kind: 'obj', ref: p,
+      x: p.x + (p.col ? p.col.dx + p.col.w / 2 : 0), y: p.y - 2, hw, hh,
+      top: p.y - (spr ? spr.height : 8)
+    });
+  }
+  list.push({ kind: 'vax', ref: Vax, x: Vax.x, y: Vax.y - 3, hw: 9, hh: 8, top: Vax.y - 34 });
+  return list;
+}
+
+function updateNearest() {
+  const px = Player.x, py = Player.y - 4;
+  let best = null, bestD = 26;
+  for (const it of World.interactables) {
+    const dx = Math.max(0, Math.abs(px - it.x) - it.hw);
+    const dy = Math.max(0, Math.abs(py - it.y) - it.hh);
+    const d = Math.hypot(dx, dy) - (it.kind === 'vax' ? 6 : 0);
+    if (d < bestD) { bestD = d; best = it; }
+  }
+  if (best) {
+    const camX = Math.round(Game.camera.x), camY = Math.round(Game.camera.y);
+    best.sx = best.x - camX;
+    best.sy = (best.top !== undefined ? best.top : best.y - 12) - camY;
+  }
+  Game.nearest = best;
+}
+
+function tryInteract() {
+  if (Game.cooldown > 0) return;
+  const it = Game.nearest;
+  if (!it) return;
+  if (it.kind === 'vax') {
+    Audio2.examine();
+    startVaxDialogue();
+    return;
+  }
+  const p = it.ref;
+  if (!p.interact) return;
+  Audio2.examine();
+  Game.mode = 'dialogue';
+  Game.examCount++;
+  const nodes = p.interact.lines.map(l => Dialogue.say(l.who, l.text, l));
+  Dialogue.start(nodes, () => {
+    Game.mode = 'play';
+    Game.cooldown = 0.3;
+    // examining things helps the sailor decide to look for company
+    if (Game.objective.id === 'explore' && Game.examCount >= 2) {
+      Game.discoveryReady = true;
+    }
+  });
+}
+
+/* ------------------------------------------------------------- 8d. UPDATE */
+const Weather = {
+  rain: [],
+  init() {
+    this.rain = [];
+    for (let i = 0; i < 90; i++) {
+      this.rain.push({
+        x: Math.random() * (VW + 60) - 30,
+        y: Math.random() * VH,
+        len: 2 + Math.floor(Math.random() * 3),
+        spd: 150 + Math.random() * 90,
+        drift: 26 + Math.random() * 18
+      });
+    }
+  },
+  update(dt) {
+    for (const d of this.rain) {
+      d.y += d.spd * dt;
+      d.x += d.drift * dt;
+      if (d.y > VH + 6) { d.y = -8; d.x = Math.random() * (VW + 60) - 30; }
+      if (d.x > VW + 30) d.x -= VW + 60;
+    }
+  },
+  draw(ctx) {
+    ctx.fillStyle = 'rgba(198,226,235,0.20)';
+    for (const d of this.rain) {
+      for (let i = 0; i < d.len; i++) ctx.fillRect(Math.round(d.x) - (i > 1 ? 1 : 0), Math.round(d.y) - i * 2, 1, 2);
+    }
+  }
+};
+
+function drawCloudShadows(ctx, t) {
+  // slow, soft patches of cloud shade drifting over the island
+  ctx.save();
+  ctx.globalAlpha = 0.075;
+  ctx.fillStyle = '#0c1a22';
+  const spots = [[0.12, 0.22, 220, 96], [0.55, 0.62, 260, 110], [0.86, 0.3, 180, 80]];
+  for (let i = 0; i < spots.length; i++) {
+    const s = spots[i];
+    const x = ((s[0] * (VW + 500) + t * (7 + i * 3)) % (VW + 500)) - 250;
+    const y = s[1] * VH + Math.sin(t * 0.18 + i) * 12;
+    ctx.beginPath();
+    ctx.ellipse(x, y, s[2] / 2, s[3] / 2, 0, 0, 6.2832);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function update(dt) {
+  Game.time += dt;
+  Weather.update(dt);
+  if (Game.toastT > 0) Game.toastT -= dt;
+  if (Game.objFlash > 0) Game.objFlash -= dt;
+  if (Game.cooldown > 0) Game.cooldown -= dt;
+
+  if (Game.fade.dir !== 0) {
+    Game.fade.a = clamp(Game.fade.a + Game.fade.dir * dt * 2.2, 0, 1);
+    if (Game.fade.a <= 0) Game.fade.dir = 0;
+    if (Game.fade.a >= 1 && Game.fade.dir > 0) Game.fade.dir = 0;
+  }
+
+  const m = Game.mode;
+  if (m === 'title') {
+    Game.titleT += dt;
+    // sparse gull cries over the title
+    Game.weather.birdT -= dt;
+    if (Game.weather.birdT <= 0) { Audio2.bird(); Game.weather.birdT = 5 + Math.random() * 6; }
+    return;
+  }
+
+  if (m === 'play') {
+    Game.playTime += dt;
+    Player.update(dt, Input.keys, blockedAt);
+    Vax.update(dt);
+    updateNearest();
+
+    // camera: smooth follow, snapped to whole pixels so nothing shimmers
+    const tx = clamp(Player.x - VW / 2, 0, MAP.w - VW);
+    const ty = clamp(Player.y - 16 - VH / 2, 0, MAP.h - VH);
+    const k = 1 - Math.pow(0.0008, dt);
+    Game.camera.x = clamp(lerp(Game.camera.x, tx, k), 0, MAP.w - VW);
+    Game.camera.y = clamp(lerp(Game.camera.y, ty, k), 0, MAP.h - VH);
+
+    // discover Vax after a little wandering (or immediately after 2 examines)
+    if (Game.objective.id === 'explore' && Game.playTime > 2.5) {
+      const d = Math.hypot(Player.x - Vax.x, Player.y - Vax.y);
+      if (d < 300 || Game.discoveryReady) {
+        Game.setObjective('talk', 'Speak to Vax');
+        Game.discoveryT = 0;
+        Audio2.bird();
+      }
+    }
+
+    // birds + rare unsettling omen
+    Game.weather.birdT -= dt;
+    if (Game.weather.birdT <= 0) { Audio2.bird(); Game.weather.birdT = 7 + Math.random() * 9; }
+    Game.omen = Game.omen || { next: 26, active: 0, x: 0, y: 0 };
+    if (Game.omen.active > 0) {
+      Game.omen.active -= dt;
+    } else {
+      Game.omen.next -= dt;
+      if (Game.omen.next <= 0) {
+        Game.omen.next = 30 + Math.random() * 25;
+        Game.omen.active = 2.6;
+        Game.omen.x = 180 + Math.random() * 420;
+        Game.omen.y = 138 + Math.random() * 8;
+        Audio2.moan();
+      }
+    }
+    return;
+  }
+
+  if (m === 'dialogue') {
+    Dialogue.update(dt);
+    Vax.update(dt);
+    return;
+  }
+
+  if (m === 'epilogue') {
+    Game.epiT += dt;
+    Player.update(dt, { up: false, down: false, left: false, right: false }, blockedAt);
+    Vax.update(dt);
+    return;
+  }
+}
+
+/* ------------------------------------------------------------- 8e. RENDER */
+function drawWorld(ctx, t) {
+  const camX = Math.round(Game.camera.x);
+  const camY = Math.round(Game.camera.y);
+  ctx.drawImage(World.terrainCanvas, camX, camY, VW, VH, 0, 0, VW, VH);
+  drawWater(ctx, camX, camY, t);
+  drawCloudShadows(ctx, t);
+
+  // the omen: a pair of pale eyes in the treeline, gone before you're sure
+  const om = Game.omen;
+  if (om && om.active > 0) {
+    const a = Math.min(1, Math.min(om.active, 2.6 - om.active + 0.2) * 1.4);
+    const ex = Math.round(om.x - camX), ey = Math.round(om.y - camY);
+    ctx.globalAlpha = clamp(a, 0, 1) * 0.85;
+    ctx.fillStyle = '#e8e0b8';
+    ctx.fillRect(ex, ey, 2, 1);
+    ctx.fillRect(ex + 4, ey, 2, 1);
+    ctx.globalAlpha = 1;
+  }
+
+  const items = [];
+  for (const p of World.props) {
+    if (p.flat) items.push({ y: -999, p });
+    else items.push({ y: p.y, p });
+  }
+  items.push({ y: Player.y, player: true });
+  items.push({ y: Vax.y, vax: true });
+  items.sort((a, b) => a.y - b.y);
+
+  for (const it of items) {
+    if (it.player) Player.draw(ctx, camX, camY, t);
+    else if (it.vax) Vax.draw(ctx, camX, camY, t);
+    else drawProp(ctx, it.p, camX, camY, t);
+  }
+
+  // a small gold diamond over whatever you are standing next to
+  const near = Game.nearest;
+  if (near && Game.mode === 'play' && near.kind === 'obj') {
+    const bob = Math.round(Math.sin(t * 3) * 1.5);
+    const mx = Math.round(near.sx), my = Math.round(near.sy - 6 + bob);
+    ctx.fillStyle = 'rgba(228,201,124,0.9)';
+    ctx.fillRect(mx - 1, my, 3, 1);
+    ctx.fillRect(mx, my - 1, 1, 3);
+    ctx.fillStyle = 'rgba(228,201,124,0.35)';
+    ctx.fillRect(mx - 2, my + 1, 5, 1);
+  }
+
+  // objective marker over Vax
+  if (Game.objective.id === 'talk' && Game.mode === 'play') {
+    const bob = Math.round(Math.sin(t * 2.4) * 1.5);
+    const mx = Math.round(Vax.x - camX), my = Math.round(Vax.y - 42 - camY + bob);
+    ctx.drawImage(SPR.bubble, mx - 5, my - 10);
+    drawText(ctx, '!', mx - 1, my - 7, '#2a2438');
+  }
+
+  // cold shadow pooling at the treeline
+  const fy = forestLineY(Player.x) - camY;
+  if (fy < VH + 40) {
+    const g = ctx.createLinearGradient(0, fy - 60, 0, fy + 24);
+    g.addColorStop(0, 'rgba(10,12,22,0.55)');
+    g.addColorStop(0.55, 'rgba(10,12,22,0.25)');
+    g.addColorStop(1, 'rgba(10,12,22,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, Math.max(0, fy - 60), VW, Math.min(VH, fy + 24) - Math.max(0, fy - 60));
+  }
+
+  ctx.drawImage(Vignette.canvas, 0, 0);
+  Weather.draw(ctx);
+}
+
+let ctx = null, canvas = null;
+
+function render(t) {
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, VW, VH);
+  if (Game.mode === 'title') {
+    drawTitle(ctx, t);
+  } else {
+    drawWorld(ctx, t);
+    const hud = Game.mode !== 'dialogue' && Game.mode !== 'epilogue';
+    if (hud) drawObjective(ctx, t);
+    if (hud) drawPrompt(ctx, t);
+    if (hud) drawToast(ctx);
+    if (Game.mode === 'dialogue') drawDialogue(ctx, t);
+    if (Game.mode === 'pause') drawPause(ctx, t);
+    if (Game.mode === 'epilogue') drawEpilogue(ctx, t);
+  }
+  if (Game.fade.a > 0) {
+    ctx.fillStyle = `rgba(4,7,12,${Game.fade.a.toFixed(3)})`;
+    ctx.fillRect(0, 0, VW, VH);
+  }
+}
+
+/* ---------------------------------------------------------------- 9. BOOT */
+function resize() {
+  const wrap = document.getElementById('wrap');
+  const availW = wrap.clientWidth || window.innerWidth;
+  const availH = (wrap.clientHeight || window.innerHeight);
+  let scale = Math.min(availW / VW, availH / VH);
+  if (scale > 2) scale = Math.floor(scale);
+  scale = Math.max(0.4, scale);
+  canvas.style.width = Math.round(VW * scale) + 'px';
+  canvas.style.height = Math.round(VH * scale) + 'px';
+}
+
+let lastT = 0;
+function loop(now) {
+  if (!lastT) lastT = now;
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.05) dt = 0.05;
+  try {
+    update(dt);
+    render(Game.time);
+  } catch (err) {
+    window.__errors.push(String(err && err.stack || err));
+    console.error(err);
+  }
+  requestAnimationFrame(loop);
+}
+
+function boot() {
+  window.__errors = window.__errors || [];
+  canvas = document.getElementById('game');
+  ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  buildAllSprites();
+  World.build();
+  buildWaterGrid();
+  buildVignette();
+  buildCollision();
+  World.interactables = collectInteractables();
+  Weather.init();
+
+  try { Game.embedded = window.top !== window.self; } catch (e) { Game.embedded = true; }
+  Game.reset(true);
+  Game.mode = 'title';
+  Game.titleScreen = 'menu';
+  Game.titleT = 0;
+  Game.epiT = 0;
+  Game.omen = { next: 26, active: 0, x: 0, y: 0 };
+
+  resize();
+  window.addEventListener('resize', resize);
+
+  // ---- test hooks (used by the automated test harness only)
+  window.__game = {
+    Game, Player, Vax, Dialogue, World, Input, Audio2, SPR, MAP,
+    blockedAt, terrainId, tryInteract, startVaxDialogue, updateNearest,
+    teleport(x, y) { Player.x = x; Player.y = y; Game.camera.x = clamp(x - VW / 2, 0, MAP.w - VW); Game.camera.y = clamp(y - VH / 2, 0, MAP.h - VH); },
+    step(dt, n) { for (let i = 0; i < (n || 1); i++) update(dt); render(Game.time); },
+    renderOnce() { render(Game.time); },
+    act(a) { handleAction(a); },
+    key(code, down) {
+      Input.keys[Input.map[code]] = down;
+      if (down) {
+        const a = actionFromKey({ code });
+        if (a) handleAction(a);
+        else if (Input.map[code]) handleAction(Input.map[code]);
+      }
+    }
+  };
+
+  requestAnimationFrame(loop);
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+</script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a4f7acd1d88c2831',t:'MTc5MjgzMTIwOQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
