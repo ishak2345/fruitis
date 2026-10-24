@@ -1,0 +1,25 @@
+{
+  "$GMSound":"",
+  "%Name":"Deserted_snow_track",
+  "audioGroupId":{
+    "name":"audiogroup_default",
+    "path":"audiogroups/audiogroup_default",
+  },
+  "bitDepth":1,
+  "bitRate":320,
+  "compression":3,
+  "conversionMode":0,
+  "duration":25.626122,
+  "name":"Deserted_snow_track",
+  "parent":{
+    "name":"group1",
+    "path":"folders/Sounds/group1.yy",
+  },
+  "preload":false,
+  "resourceType":"GMSound",
+  "resourceVersion":"2.0",
+  "sampleRate":44100,
+  "soundFile":"Deserted_snow_track.ogg",
+  "type":1,
+  "volume":1.0,
+}

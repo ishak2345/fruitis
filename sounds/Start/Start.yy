@@ -1,0 +1,25 @@
+{
+  "$GMSound":"",
+  "%Name":"Start",
+  "audioGroupId":{
+    "name":"audiogroup_default",
+    "path":"audiogroups/audiogroup_default",
+  },
+  "bitDepth":1,
+  "bitRate":320,
+  "compression":3,
+  "conversionMode":0,
+  "duration":51.818188,
+  "name":"Start",
+  "parent":{
+    "name":"group1",
+    "path":"folders/Sounds/group1.yy",
+  },
+  "preload":false,
+  "resourceType":"GMSound",
+  "resourceVersion":"2.0",
+  "sampleRate":48000,
+  "soundFile":"Start.ogg",
+  "type":1,
+  "volume":1.0,
+}

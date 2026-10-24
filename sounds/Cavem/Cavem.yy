@@ -1,0 +1,25 @@
+{
+  "$GMSound":"",
+  "%Name":"Cavem",
+  "audioGroupId":{
+    "name":"audiogroup_default",
+    "path":"audiogroups/audiogroup_default",
+  },
+  "bitDepth":1,
+  "bitRate":256,
+  "compression":3,
+  "conversionMode":0,
+  "duration":15.000104,
+  "name":"Cavem",
+  "parent":{
+    "name":"group1",
+    "path":"folders/Sounds/group1.yy",
+  },
+  "preload":false,
+  "resourceType":"GMSound",
+  "resourceVersion":"2.0",
+  "sampleRate":44100,
+  "soundFile":"Cavem.ogg",
+  "type":0,
+  "volume":1.0,
+}
