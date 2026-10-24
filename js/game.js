@@ -107,8 +107,11 @@ const Player = {
       const len = Math.hypot(dx, dy) || 1;
       const vx = dx / len * this.speed * dt;
       const vy = dy / len * this.speed * dt;
-      if (vx !== 0 && !blocked(this.x + vx, this.y)) this.x += vx;
-      if (vy !== 0 && !blocked(this.x, this.y + vy)) this.y += vy;
+      // if we somehow stand inside a solid (bad spawn, old save), let the
+      // player walk OUT instead of moonwalking in place forever
+      const stuck = blocked(this.x, this.y);
+      if (vx !== 0 && (stuck || !blocked(this.x + vx, this.y))) this.x += vx;
+      if (vy !== 0 && (stuck || !blocked(this.x, this.y + vy))) this.y += vy;
       this.animT += dt;
       this.idleT = 0;
       this.stepT += dt;
@@ -282,6 +285,20 @@ const Game = {
     this.battleImmune = 0;
     this.epilogueDone = false;
     this.omen = { next: 26, active: 0, x: 0, y: 0 };
+    this.objFlash = 0;
+    this.saveFlashT = 0;
+    this.areaNameT = 0;
+    this.pauseIndex = 0;
+    this.pauseScreen = 'menu';
+    this.titleScreen = 'menu';
+    this.menuIndex = 0;
+    this.fade = { a: 0, dir: 0, cb: null };
+    this.epiT = 0;
+    Input.keys.up = Input.keys.down = Input.keys.left = Input.keys.right = false;
+    Battle.active = false;
+    Battle.enemy = null;
+    Battle.projectiles = [];
+    Battle.state = 'intro';
     Dialogue.reset();
     World.visited = {};
   },
@@ -303,7 +320,7 @@ const Game = {
   introDone() {
     // fade from the intro into the beach; the sailor wakes among the wreck
     this.transition(() => {
-      World.load('beach', 240, 396, 'down');
+      World.load('beach', BEACH_SPAWN.x, BEACH_SPAWN.y, BEACH_SPAWN.dir);
       Camera.snap();
       this.mode = 'play';
       this.waking = 2.6;            // seconds lying in the sand
@@ -333,7 +350,7 @@ const Game = {
   restart() {
     this.reset(true);
     this.transition(() => {
-      World.load('beach', 240, 396, 'down');
+      World.load('beach', BEACH_SPAWN.x, BEACH_SPAWN.y, BEACH_SPAWN.dir);
       Camera.snap();
       this.mode = 'play';
       this.waking = 1.2;
@@ -345,8 +362,8 @@ const Game = {
     this.mode = 'title';
     this.titleScreen = 'menu';
     this.menuIndex = 0;
-    AudioSys.stopSong();
-    AudioSys.setMix({ ocean: 0.06, wind: 0.008, rain: 0, hum: 0.01 }, 0.5);
+    AudioSys.restartSong('title');
+    AudioSys.setMix({ ocean: 0.09, wind: 0.012, rain: 0, hum: 0.016 }, 0.5);
   },
   transition(cb) {
     if (this.fade.dir !== 0) { if (cb) cb(); return; }
@@ -438,7 +455,7 @@ const Game = {
         World.load(data.area, data.x, data.y, data.dir || 'down');
       } else {
         this.hp = this.maxhp;
-        World.load('beach', 240, 396, 'down');
+        World.load('beach', BEACH_SPAWN.x, BEACH_SPAWN.y, BEACH_SPAWN.dir);
       }
       Camera.snap();
       this.mode = 'play';
@@ -919,6 +936,7 @@ function handleAction(action) {
 /* ------------------------------------------------------------- events */
 function installInputListeners() {
   window.addEventListener('keydown', (e) => {
+    AudioSys.unlock();   // browsers keep AudioContext suspended until a gesture
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab'].includes(e.code)) e.preventDefault();
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const dir = Input.map[e.code];
@@ -938,12 +956,15 @@ function installInputListeners() {
     const dir = Input.map[e.code];
     if (dir) Input.keys[dir] = false;
   });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) AudioSys.unlock();
+  });
   window.addEventListener('blur', () => {
     Input.keys.up = Input.keys.down = Input.keys.left = Input.keys.right = false;
     if (Game.mode === 'play') { Game.mode = 'pause'; Game.pauseIndex = 0; Game.pauseScreen = 'menu'; }
   });
   window.addEventListener('pointerdown', () => {
-    AudioSys.resume();
+    AudioSys.unlock();
     if (Game.mode === 'intro') Intro.advance();
     else if (Game.mode === 'dialogue') handleAction('confirm');
   });
@@ -1190,17 +1211,20 @@ function boot() {
   Game.reset(true);
   Game.mode = 'title';
   Game.titleScreen = 'menu';
-  AudioSys.setMix({ ocean: 0.06, wind: 0.008, rain: 0, hum: 0.012 }, 1);
+  AudioSys.startAmbience();          // layers exist from frame one (suspended until gesture)
+  AudioSys.playSong('title');
+  AudioSys.setMix({ ocean: 0.09, wind: 0.012, rain: 0, hum: 0.016 }, 1);
 
   resize();
   window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', () => setTimeout(resize, 60));
   installInputListeners();
 
   // ---- test hooks (used by tools/harness.mjs; harmless in a browser)
   window.__game = {
     Game, Player, Camera, Dialogue, Inventory, Battle, World, Areas, Input, AudioSys, SPR, ITEMS,
     Intro, SaveSys, blockedAt, tryInteract, updateNearest, handleAction, update, render,
-    bTerrainId, PAL, buildWaterGrid, drawWorld, Weather, Camera,
+    bTerrainId, PAL, buildWaterGrid, drawWorld, Weather, Camera, hpBarLayout, textWidth,
     teleport(x, y) {
       Player.x = x; Player.y = y;
       Camera.snap();

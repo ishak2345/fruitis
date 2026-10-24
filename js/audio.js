@@ -16,6 +16,8 @@
 const AudioSys = (() => {
   let ctx = null, master = null, musicBus = null, ambBus = null;
   let enabled = true, started = false, volume = 1;   // volume: 1, .5, 0 steps
+  const MASTER = 0.8;        // was 0.55 — players reported the game as near-silent
+  const AMB_BOOST = 2.2;     // area mixes are authored quiet; scale once, here
   const amb = {};           // ambience layer gains by name
   const noiseCache = {};
 
@@ -26,9 +28,9 @@ const AudioSys = (() => {
       if (!AC) return false;
       ctx = new AC();
       master = ctx.createGain();
-      master.gain.value = enabled ? 0.55 * volume : 0;
+      master.gain.value = enabled ? MASTER * volume : 0;
       master.connect(ctx.destination);
-      musicBus = ctx.createGain(); musicBus.gain.value = 0.9; musicBus.connect(master);
+      musicBus = ctx.createGain(); musicBus.gain.value = 1; musicBus.connect(master);
       ambBus = ctx.createGain(); ambBus.gain.value = 1; ambBus.connect(master);
       return true;
     } catch (e) { ctx = null; return false; }
@@ -36,6 +38,26 @@ const AudioSys = (() => {
   function resume() {
     if (!ctx && !init()) return;
     if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+  }
+  // call on EVERY first user gesture (keydown, pointerdown, tab visible):
+  // creates the context if needed, resumes it, makes sure the ambience
+  // layers exist and the current song re-primes instead of bursting.
+  function unlock() {
+    if (!init()) return;
+    let wasSuspended = false;
+    try { wasSuspended = ctx.state === 'suspended'; } catch (e) {}
+    resume();
+    startAmbience();
+    if (wasSuspended && seq.song) {
+      // scheduling stalled while suspended: restart the song cleanly
+      seq.step = 0;
+      seq.nextT = ctx.currentTime + 0.12;
+    }
+  }
+  function restartSong(name) {
+    seq.song = name;
+    seq.step = 0;
+    if (ctx) seq.nextT = ctx.currentTime + 0.12;
   }
   function noiseBuffer(seconds, brown) {
     const key = (brown ? 'b' : 'w') + seconds;
@@ -93,7 +115,7 @@ const AudioSys = (() => {
     speed = speed || 0.6;
     const t = ctx.currentTime;
     for (const k in amb) {
-      const target = (mix && mix[k]) || 0;
+      const target = ((mix && mix[k]) || 0) * AMB_BOOST;
       try { amb[k].gain.cancelScheduledValues(t); amb[k].gain.setTargetAtTime(target, t, 1 / speed); } catch (e) {}
     }
   }
@@ -165,7 +187,7 @@ const AudioSys = (() => {
         [0, N.A2, 3.5], [8, N.E2, 3.5], [16, N.C3, 3.5], [24, N.G2, 3.5],
         [32, N.F2, 3.5], [40, N.C3, 3.5], [48, N.E2, 2.0], [52, N.E2, 1.6], [56, N.A2, 3.5]
       ],
-      leadVol: 0.045, bassVol: 0.05, leadType: 'triangle', bassType: 'sine'
+      leadVol: 0.10, bassVol: 0.11, leadType: 'triangle', bassType: 'sine'
     },
     village: {
       bpm: 88, bars: 4, stepsPerBar: 16,
@@ -181,7 +203,7 @@ const AudioSys = (() => {
         [32, N.D3, 2.6], [36, N.A2, 2.6], [40, N.G2, 2.6], [44, N.B2, 2.6],
         [48, N.C3, 2.6], [52, N.G2, 2.6], [56, N.C3, 2.6]
       ],
-      leadVol: 0.04, bassVol: 0.045, leadType: 'triangle', bassType: 'sine'
+      leadVol: 0.09, bassVol: 0.10, leadType: 'triangle', bassType: 'sine'
     },
     battle: {
       bpm: 132, bars: 2, stepsPerBar: 16,
@@ -196,7 +218,7 @@ const AudioSys = (() => {
         [14, N.A2, 0.6], [16, N.D2, 0.9], [19, N.D2, 0.6], [22, N.C3, 0.7],
         [24, N.A2, 0.9], [27, N.E2, 0.6], [30, N.A2, 0.6]
       ],
-      leadVol: 0.04, bassVol: 0.055, leadType: 'square', bassType: 'triangle'
+      leadVol: 0.085, bassVol: 0.11, leadType: 'square', bassType: 'triangle'
     }
   };
   const seq = { song: null, step: 0, nextT: 0 };
@@ -213,6 +235,8 @@ const AudioSys = (() => {
       const s = SONGS[seq.song];
       if (!s) return;
       const stepDur = 60 / s.bpm / 4;
+      // if the context was suspended the clock jumped: never chase the past
+      if (seq.nextT < ctx.currentTime - 0.25) seq.nextT = ctx.currentTime + 0.05;
       while (seq.nextT < ctx.currentTime + 0.18) {
         const st = seq.step % (s.bars * s.stepsPerBar);
         for (const nt of s.lead) if (nt[0] === st) tone(nt[1], nt[2] * stepDur, s.leadType, s.leadVol, seq.nextT);
@@ -226,19 +250,19 @@ const AudioSys = (() => {
   /* -------------------------------------------------------------- the API */
   let stepSide = 0;
   return {
-    init, resume, startAmbience, setMix, playSong, stopSong, tickMusic,
+    init, resume, unlock, startAmbience, setMix, playSong, restartSong, stopSong, tickMusic,
     get ctx() { return ctx; },
     get enabled() { return enabled; },
     get volume() { return volume; },
     setEnabled(on) {
       enabled = on;
       if (!on) { stopSong(); }
-      if (master) master.gain.value = on ? 0.55 * volume : 0;
+      if (master) master.gain.value = on ? MASTER * volume : 0;
       if (on) { resume(); startAmbience(); }
     },
     cycleVolume() {
       volume = volume === 1 ? 0.5 : volume === 0.5 ? 0 : 1;
-      if (master) master.gain.value = enabled ? 0.55 * volume : 0;
+      if (master) master.gain.value = enabled ? MASTER * volume : 0;
       return volume;
     },
     /* ------ sfx ------ */
@@ -249,18 +273,18 @@ const AudioSys = (() => {
       else if (surface === 'wood') burst(0.06, 240, 2.2, 0.05);
       else burst(0.07, 330, 1.4, 0.024);
     },
-    type() { blip(500 + Math.random() * 50, 0.024, 'square', 0.011); },
-    advance() { blip(660, 0.05, 'triangle', 0.03, 880); },
-    back() { blip(440, 0.06, 'triangle', 0.028, 300); },
-    select() { blip(760, 0.07, 'triangle', 0.033, 980); },
-    examine() { blip(440, 0.1, 'triangle', 0.032, 660); },
-    talk() { blip(392, 0.09, 'square', 0.02, 523); },
-    open() { blip(320, 0.12, 'triangle', 0.035, 520); },
-    close() { blip(520, 0.1, 'triangle', 0.03, 320); },
-    stepObj() { blip(523, 0.12, 'triangle', 0.038, 784); },
-    itemGet() { blip(587, 0.09, 'square', 0.035); setTimeout(() => blip(784, 0.12, 'square', 0.035), 90); setTimeout(() => blip(1175, 0.18, 'triangle', 0.04), 190); },
-    heal() { blip(523, 0.12, 'sine', 0.045, 784); setTimeout(() => blip(659, 0.16, 'sine', 0.04, 1046), 110); },
-    save() { blip(660, 0.1, 'triangle', 0.04); setTimeout(() => blip(880, 0.16, 'triangle', 0.04), 100); setTimeout(() => blip(1320, 0.22, 'sine', 0.035), 210); },
+    type() { blip(500 + Math.random() * 50, 0.024, 'square', 0.018); },
+    advance() { blip(660, 0.05, 'triangle', 0.05, 880); },
+    back() { blip(440, 0.06, 'triangle', 0.045, 300); },
+    select() { blip(760, 0.07, 'triangle', 0.05, 980); },
+    examine() { blip(440, 0.1, 'triangle', 0.05, 660); },
+    talk() { blip(392, 0.09, 'square', 0.032, 523); },
+    open() { blip(320, 0.12, 'triangle', 0.055, 520); },
+    close() { blip(520, 0.1, 'triangle', 0.048, 320); },
+    stepObj() { blip(523, 0.12, 'triangle', 0.058, 784); },
+    itemGet() { blip(587, 0.09, 'square', 0.055); setTimeout(() => blip(784, 0.12, 'square', 0.055), 90); setTimeout(() => blip(1175, 0.18, 'triangle', 0.06), 190); },
+    heal() { blip(523, 0.12, 'sine', 0.065, 784); setTimeout(() => blip(659, 0.16, 'sine', 0.06, 1046), 110); },
+    save() { blip(660, 0.1, 'triangle', 0.06); setTimeout(() => blip(880, 0.16, 'triangle', 0.06), 100); setTimeout(() => blip(1320, 0.22, 'sine', 0.05), 210); },
     warn() {
       if (!ctx || !enabled) return;
       try {
@@ -281,6 +305,24 @@ const AudioSys = (() => {
         });
       } catch (e) {}
     },
+    thunder() {
+      if (!ctx || !enabled) return;
+      try {
+        const t0 = ctx.currentTime;
+        // sub-bass drop + filtered rumble, falling like real thunder
+        burst(1.6, 90, 0.5, 0.16, 'lowpass');
+        setTimeout(() => burst(1.1, 220, 0.5, 0.09, 'lowpass'), 180);
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(70, t0);
+        o.frequency.exponentialRampToValueAtTime(30, t0 + 1.4);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.linearRampToValueAtTime(0.14, t0 + 0.05);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.6);
+        o.connect(g); g.connect(master);
+        o.start(t0); o.stop(t0 + 1.7);
+      } catch (e) {}
+    },
     moan() {
       if (!ctx || !enabled) return;
       blip(72, 2.6, 'sine', 0.05, 48);
@@ -292,11 +334,6 @@ const AudioSys = (() => {
       const base = 1400 + Math.random() * 900;
       blip(base, 0.06, 'sine', 0.016, base * 1.35);
       setTimeout(() => blip(base * 0.92, 0.05, 'sine', 0.012, base * 1.2), 95);
-    },
-    thunder() {
-      if (!ctx || !enabled) return;
-      burst(2.4, 90, 0.4, 0.22, 'lowpass');
-      burst(1.1, 220, 0.5, 0.08, 'lowpass');
     },
     crash() { // ship destruction sting
       if (!ctx || !enabled) return;

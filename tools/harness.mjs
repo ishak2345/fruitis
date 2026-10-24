@@ -363,24 +363,42 @@ const localStorageStub = {
   removeItem: k => { delete storage[k]; }
 };
 
-// fake-but-faithful AudioContext so the music scheduler code paths execute
-function fakeAC() {
+// fake-but-faithful AudioContext: starts SUSPENDED like a real browser before
+// a user gesture; resume() flips it; oscillators are counted so tests can
+// prove notes were actually scheduled.
+function makeFakeAC(startSuspended) {
+  const ac = {
+    sampleRate: 44100, currentTime: 0,
+    state: startSuspended ? 'suspended' : 'running',
+    resumeCalls: 0, oscCount: 0, bufCount: 0,
+    destination: null,
+    resume() { ac.resumeCalls++; ac.state = 'running'; return Promise.resolve(); },
+    _tick(dt) { if (ac.state === 'running') ac.currentTime += dt; }
+  };
   const param = () => ({
     value: 0, setValueAtTime() {}, linearRampToValueAtTime() {},
     exponentialRampToValueAtTime() {}, setTargetAtTime() {}, cancelScheduledValues() {}
   });
-  const node = () => ({ connect() {}, disconnect() {}, gain: param(), frequency: param(), type: '', Q: param(), buffer: null, start() {}, stop() {} });
-  return {
-    sampleRate: 44100, currentTime: 0, state: 'running', destination: node(),
-    resume() { return Promise.resolve(); },
-    createGain: node, createOscillator: node, createBufferSource: node, createBiquadFilter: node,
-    createBuffer(ch, len) {
-      return { getChannelData: () => new Float32Array(len) };
-    }
-  };
+  const node = () => ({
+    connect() {}, disconnect() {}, gain: param(), frequency: param(), type: '', Q: param(), buffer: null,
+    start() { ac.oscCount++; }, stop() {}
+  });
+  ac.destination = node();
+  ac.createGain = node; ac.createOscillator = node;
+  ac.createBufferSource = node; ac.createBiquadFilter = node;
+  ac.createBuffer = (ch, len) => { ac.bufCount++; return { getChannelData: () => new Float32Array(len) }; };
+  return ac;
 }
+let fakeAC = makeFakeAC(false);
 
 const mainCanvas = makeCanvasStub(384, 216);
+// listener registry shared by window + document so tests can fire real events
+const listeners = { win: {}, doc: {} };
+function fireOn(map, type, ev) {
+  ev = ev || {};
+  ev.type = type; ev.preventDefault = ev.preventDefault || (() => {}); ev.stopPropagation = ev.stopPropagation || (() => {});
+  (map[type] || []).forEach(fn => fn(ev));
+}
 const sandbox = {
   console, Math, setTimeout, clearTimeout, setInterval, clearInterval,
   localStorage: localStorageStub,
@@ -390,18 +408,25 @@ const sandbox = {
     readyState: 'complete',
     createElement: tag => tag === 'canvas' ? makeCanvasStub(300, 150) : { style: {} },
     getElementById: id => id === 'game' ? mainCanvas : { clientWidth: 800, clientHeight: 500, style: {} },
-    addEventListener() {},
-    body: {}
+    addEventListener(type, fn) { (listeners.doc[type] = listeners.doc[type] || []).push(fn); },
+    removeEventListener() {},
+    body: {}, hidden: false
   },
   navigator: { userAgent: 'harness' },
   Promise, JSON, Uint8Array, Uint8ClampedArray, Float64Array, Int32Array, Path2D: Path2DStub,
-  __errors: []
+  __errors: [],
+  __listeners: listeners,
+  __fireWin(type, ev) { fireOn(listeners.win, type, ev); },
+  __fireDoc(type, ev) { fireOn(listeners.doc, type, ev); },
+  __fakeAC: null
 };
 sandbox.window = sandbox;
 sandbox.self = sandbox;
 sandbox.top = { not: 'self' };
-sandbox.AudioContext = fakeAC;
-sandbox.addEventListener = () => {};
+Object.defineProperty(sandbox, 'AudioContext', {
+  get() { return function () { sandbox.__fakeAC = fakeAC; return fakeAC; }; }
+});
+sandbox.addEventListener = (type, fn) => { (listeners.win[type] = listeners.win[type] || []).push(fn); };
 sandbox.removeEventListener = () => {};
 sandbox.innerWidth = 800;
 sandbox.innerHeight = 500;
@@ -429,12 +454,16 @@ function ok(cond, msg) {
 }
 function section(name) { console.log('\n== ' + name + ' =='); }
 function settle(steps = 30) { G.Game.cooldown = 0; step(steps); }
+const textWidthProxy = (t) => G.textWidth(t);
 function shot(name) {
   if (!wantShots) return;
   if (!fs.existsSync(SHOTS)) fs.mkdirSync(SHOTS, { recursive: true });
   dumpPNG(mainCanvas, path.join(SHOTS, name + '.png'));
 }
-function step(n = 1, dt = 1 / 60) { G.step(dt, n); }
+function step(n = 1, dt = 1 / 60) {
+  G.step(dt, n);
+  if (sandbox.__fakeAC) sandbox.__fakeAC._tick(dt * n);
+}
 function pressE() { G.Game.cooldown = 0; G.act('confirm'); }
 function advanceDialogueFully(label) {
   let guard = 0;
@@ -485,7 +514,10 @@ function finishDialogue(label) {
 
 /* ================================================================ run */
 section('boot');
+step(5);
+shot('01-title');
 ok(sandbox.__errors.length === 0, 'no runtime errors on boot: ' + sandbox.__errors.slice(0, 3).join(' // '));
+ok(G.Game.mode === 'title', 'starts on the title screen');
 ok(G.SPR.p_down0 && G.SPR.p_right0 && G.SPR.v_down0, 'character sprites exist');
 ok(G.SPR.p_down0.width === 16 && G.SPR.p_down0.height === 20, 'sailor sprite is 16x20');
 ok(G.SPR.v_down0.width === 16 && G.SPR.v_down0.height === 22, 'vax sprite is 16x22');
@@ -551,28 +583,96 @@ section('vax redesign (priority B)');
   ok(grey, 'baggy light grey trousers present');
 }
 
-section('title + intro (priority C)');
-step(5);
-shot('01-title');
-ok(G.Game.mode === 'title', 'starts on title');
-// no save yet -> first item is New Game
-G.act('confirm');
-ok(G.Game.mode === 'intro', 'confirm starts intro (new game)');
-step(30);
-shot('02-intro-panel');
-// step through every panel with double presses (complete + advance)
-for (let i = 0; i < 10; i++) { pressE(); step(4); pressE(); step(6); }
-ok(G.Game.mode !== 'intro' || G.Intro.finished, 'intro panels all advanced');
-// let the transition fade finish
-step(200);
-ok((G.Game.mode === 'play' || G.Game.mode === 'dialogue') && G.World.areaId === 'beach', 'washed up on the beach (mode=' + G.Game.mode + ' area=' + G.World.areaId + ')');
-ok(G.Game.waking > 0 || G.Game.wakingTalk, 'sailor starts lying in the sand');
+section('audio: autoplay policy (suspended until first gesture)');
+{
+  // simulate a real browser: context created at boot stays suspended until
+  // the player presses a key; the game must unlock and play music.
+  const ac = sandbox.__fakeAC;
+  ok(!!ac, 'AudioContext was created at boot');
+  ac.state = 'suspended';          // what Chrome/Firefox do before a gesture
+  ac.currentTime = 0; ac.resumeCalls = 0; ac.oscCount = 0;
+  // some frames pass on the silent title screen
+  step(30);
+  const oscWhileSuspended = ac.oscCount;
+  // the player presses Z (New Game) — a KEYBOARD gesture:
+  sandbox.__fireWin('keydown', { code: 'KeyZ' });
+  step(2);
+  ok(ac.resumeCalls >= 1, 'keydown resumes the suspended AudioContext');
+  ok(ac.state === 'running', 'audio context is running after the gesture');
+  step(120);                        // ~2s of music
+  ok(ac.oscCount > oscWhileSuspended + 4, 'music notes scheduled after unlock (osc=' + ac.oscCount + ')');
+  ok(G.Game.mode === 'intro', 'the same keypress also started the game');
+}
+
+section('REAL PLAYER: cold start to walking (no teleports)');
+{
+  let shotStorm = false, shotTitle = false;
+  // advance through the intro like a player (E completes, E advances)
+  shot('02-intro-calm');
+  let guard = 0;
+  while (G.Game.mode === 'intro' && guard++ < 200) {
+    pressE(); step(3);
+    if (G.Game.mode === 'intro' && G.Intro.panel() && G.Intro.panel().storm && !shotStorm) { shotStorm = true; shot('02b-intro-storm'); }
+    pressE(); step(8);
+    if (G.Game.mode === 'intro' && G.Intro.panel() && G.Intro.panel().title && !shotTitle) { shotTitle = true; step(40); shot('02c-intro-titlecard'); }
+  }
+  ok(guard < 200, 'intro finished without getting stuck');
+  step(250);   // transition + wake
+  ok(G.World.areaId === 'beach', 'washed up on the beach');
+  ok(G.Game.mode === 'dialogue' || G.Game.mode === 'play', 'wake-up scene playing');
+  let g2 = 0;
+  while (G.Game.mode === 'dialogue' && g2++ < 400) { G.Dialogue.advance(); step(2); }
+  ok(G.Game.mode === 'play', 'standing up');
+  // THE moonwalk regression test: walk from the actual spawn, no teleport
+  const x0 = G.Player.x, y0 = G.Player.y;
+  const terr = G.bTerrainId(G.Player.x, G.Player.y + 2);
+  ok(terr === 2 || terr === 3 || terr === 4 || terr === 5, 'spawn is on solid ground (terrain=' + terr + ')');
+  G.Input.keys.right = true;
+  for (let i = 0; i < 180; i++) step(1);
+  G.Input.keys.right = false;
+  G.Input.keys.up = true;
+  for (let i = 0; i < 150; i++) step(1);
+  G.Input.keys.up = false;
+  ok(G.Player.x - x0 > 30, 'can walk right from spawn (dx=' + (G.Player.x - x0).toFixed(1) + ')');
+  ok(G.Player.y - y0 < -30, 'can walk up from spawn (dy=' + (G.Player.y - y0).toFixed(1) + ')');
+  shot('03b-walking-from-spawn');
+  // walk down to the shore and make sure the sea actually blocks us
+  G.Input.keys.down = true;
+  for (let i = 0; i < 300; i++) step(1);
+  G.Input.keys.down = false;
+  const shoreTerr = G.bTerrainId(G.Player.x, G.Player.y + 2);
+  ok(shoreTerr <= 2, 'sea blocks the player at the waterline (terrain=' + shoreTerr + ')');
+}
+
+section('beach props are reachable (bell + lantern)');
+{
+  // after the de-watering pass, the ship's bell and the lantern must stand
+  // on walkable ground, not in the sea
+  const bell = G.World.interactables.find(i => i.ref.interact && i.ref.interact.id === 'bell');
+  const lantern = G.World.interactables.find(i => i.kind === 'lantern');
+  ok(!!bell, 'bell exists');
+  ok(!!lantern, 'memory lantern exists');
+  const bt = bell ? G.bTerrainId(bell.ref.x, bell.ref.y + 3) : -1;
+  const lt = lantern ? G.bTerrainId(lantern.ref.x, lantern.ref.y + 3) : -1;
+  ok(bt >= 2, 'bell is on land now (terrain=' + bt + ', was deep water)');
+  ok(lt >= 2, 'lantern is on land now (terrain=' + lt + ', was deep water)');
+}
+
+section('HP bar text stays inside its panel');
+{
+  const L = G.hpBarLayout ? G.hpBarLayout() : null;
+  ok(!!L, 'hpBarLayout exposed');
+  if (L) {
+    const textEnd = L.textX + textWidthProxy(L.label);
+    ok(textEnd <= L.x + L.panelW - 2, 'HP label ends ' + (L.x + L.panelW - textEnd) + 'px inside the panel');
+  }
+}
+
+section('wake-up scene');
 shot('03-beach-waking');
-// wake up
-step(200);
-ok(G.Game.mode === 'dialogue', 'wake-up inner monologue plays');
+ok(G.Game.waking > 0 || G.Game.wakingTalk || G.Game.objective.id === 'explore', 'sailor woke on the shore');
 finishDialogue('waking');
-ok(G.Game.objective.id === 'explore', 'objective: explore the shore');
+ok(['explore', 'talk'].includes(G.Game.objective.id), 'objective tracker is live (id=' + G.Game.objective.id + ')');
 
 section('sailor walk animation (priority A)');
 {
@@ -610,23 +710,27 @@ section('sailor walk animation (priority A)');
 
 
 section('interactions + items');
+// helper: stand just below an interactable and press E (position-agnostic)
+function walkToAndUse(matchFn, label) {
+  const it = G.World.interactables.find(matchFn);
+  if (!it) { ok(false, label + ': not found'); return null; }
+  G.teleport(it.ref.x, it.ref.y + 10);
+  settle();
+  ok(G.Game.nearest && matchFn(G.Game.nearest), label + ' is the nearest interactable');
+  pressE(); step(2);
+  finishDialogue(label);
+  return it;
+}
 // ship's bell (one-time pickup from an examinable)
-G.teleport(228, 414);
-settle();
-ok(G.Game.nearest && G.Game.nearest.ref.interact && G.Game.nearest.ref.interact.id === 'bell', 'bell is the nearest interactable');
-pressE(); step(2);
-finishDialogue('bell');
+walkToAndUse(i => i.ref.interact && i.ref.interact.id === 'bell', 'bell');
 ok(G.Inventory.has('bell'), 'bell added to inventory');
 ok(G.Game.flags.got_bell, 'bell once-flag set');
-pressE(); step(2); finishDialogue('bell-again');
-ok(G.Inventory.count('bell') === 1, 'bell cannot be taken twice');
+const bellCount1 = G.Inventory.count('bell');
+walkToAndUse(i => i.ref.interact && i.ref.interact.id === 'bell', 'bell-again');
+ok(G.Inventory.count('bell') === bellCount1, 'bell cannot be taken twice');
 // lantern: rest + save
-G.teleport(254, 416);
-settle();
-ok(G.Game.nearest && G.Game.nearest.kind === 'lantern', 'lantern is nearest');
 G.Game.hp = 7;
-pressE(); step(2);
-finishDialogue('lantern');
+walkToAndUse(i => i.kind === 'lantern', 'lantern');
 ok(G.Game.hp === G.Game.maxhp, 'lantern restores HP');
 ok(G.SaveSys.exists(), 'lantern saved the game');
 ok(storage['fructasia_ch1_save_v1'], 'save in localStorage');
@@ -871,7 +975,73 @@ step(80);            // the card needs a beat before it accepts input
 pressE(); step(5);
 ok(G.Game.mode === 'play', 'back to play after chapter card');
 
-section('props stay inside their maps (no clipped sprites)');
+section('restart / title / continue cycle (clean state every time)');
+{
+  // deterministic pause-menu navigation: PAUSE_ITEMS =
+  // Resume / Inventory / Controls / Save Game / Restart / Sound / Title Screen
+  const pauseSelect = (label, index) => {
+    G.act('pause');
+    for (let k = 0; k < index; k++) G.act('down');
+    G.act('confirm');
+  };
+
+  // --- pause -> Restart ---
+  pauseSelect('Restart', 4);
+  step(300);   // transition + wake
+  let g = 0;
+  while (G.Game.mode === 'dialogue' && g++ < 200) { G.Dialogue.advance(); step(2); }
+  ok(G.World.areaId === 'beach', 'Restart puts us back on the beach');
+  ok(G.Game.mode === 'play', 'Restart returns to playable state');
+  ok(G.Game.hp === G.Game.maxhp, 'Restart restores HP');
+  ok(G.Inventory.has('compass') && !G.Inventory.has('token'), 'Restart resets inventory to the starting kit');
+  ok(!G.Game.flags.gotToken && !G.Game.flags.metVax, 'Restart clears story flags');
+  // walk after restart (the exact reported bug: broken state after Restart)
+  const x0 = G.Player.x, y0 = G.Player.y;
+  G.Input.keys.right = true; for (let i = 0; i < 120; i++) step(1); G.Input.keys.right = false;
+  ok(G.Player.x - x0 > 20, 'movement works after Restart (dx=' + (G.Player.x - x0).toFixed(1) + ')');
+
+  // --- pause -> Title Screen ---
+  pauseSelect('Title Screen', 6);
+  step(10);
+  ok(G.Game.mode === 'title', 'Title Screen reachable from pause');
+
+  // --- Continue must restore whatever the save actually holds ---
+  // (we are on the title screen right now; hop back into the game first)
+  G.act('confirm'); step(200);
+  ok(G.Game.mode === 'play', 'back in the game to set up the save test');
+  G.Game.flags.gotToken = true;
+  G.Inventory.add('token', 1);
+  ok(G.SaveSys.save(), 'saved a known state before Restart');
+  const snapInv = JSON.stringify(G.Inventory.serialize());
+  pauseSelect('Restart', 4);
+  step(300);
+  let gR = 0;
+  while (G.Game.mode === 'dialogue' && gR++ < 200) { G.Dialogue.advance(); step(2); }
+  ok(!G.Game.flags.gotToken, 'Restart wiped the runtime flags');
+  G.Game.toTitle(); step(10);
+  G.act('confirm');    // Continue is the first item when a save exists
+  step(200);
+  ok(G.Game.flags.gotToken === true, 'Continue restores the saved flags');
+  ok(JSON.stringify(G.Inventory.serialize()) === snapInv, 'Continue restores the saved inventory');
+
+  // --- New Game from title: full reset again ---
+  G.Game.toTitle(); step(10);
+  ok(G.Game.mode === 'title', 'back on title');
+  G.act('down'); G.act('confirm');   // New Game is the second item when a save exists
+  ok(G.Game.mode === 'intro', 'New Game starts the intro');
+  G.act('pause');                    // ESC skips the intro
+  step(250);
+  ok(G.World.areaId === 'beach' && (G.Game.mode === 'play' || G.Game.mode === 'dialogue'), 'intro skip lands on the beach');
+  ok(!G.Game.flags.gotToken, 'New Game state is fresh');
+  g = 0;
+  while (G.Game.mode === 'dialogue' && g++ < 200) { G.Dialogue.advance(); step(2); }
+  ok(G.Game.mode === 'play', 'standing after the skipped intro');
+  const x1 = G.Player.x;
+  G.Input.keys.right = true; for (let i = 0; i < 120; i++) step(1); G.Input.keys.right = false;
+  ok(G.Player.x - x1 > 20, 'movement works after New Game (dx=' + (G.Player.x - x1).toFixed(1) + ')');
+}
+
+section('props stay inside their maps (no clipped sprites)');section('props stay inside their maps (no clipped sprites)');
 {
   let bad = 0;
   for (const areaId in G.Areas) {
@@ -890,9 +1060,12 @@ section('props stay inside their maps (no clipped sprites)');
 
 section('save / continue roundtrip');
 {
-  // save in the village
-  G.teleport(352, 330);
-settle();
+  // set up a known village context (earlier sections may have restarted)
+  G.loadArea('village', 352, 330, 'down');
+  G.Game.flags.metVax = true;
+  if (!G.Inventory.has('token')) G.Inventory.add('token', 1);
+  G.Game.flags.gotToken = true;
+  settle();
   const okSave = G.SaveSys.save();
   ok(okSave, 'saved in village');
   const before = {

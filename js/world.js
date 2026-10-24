@@ -121,6 +121,8 @@ function buildGridArea(area, grid) {
 
 /* ============================================================ THE BEACH === */
 const BEACH = { w: 704, h: 544 };
+// canonical beach spawn: on dry sand ABOVE the waterline (bShoreY(240) ~ 384)
+const BEACH_SPAWN = { x: 240, y: 356, dir: 'down' };
 function bShoreY(x) { return 392 + 18 * Math.sin(x * 0.013) + 8 * Math.sin(x * 0.037 + 2.0); }
 function bGrassY(x) { return bShoreY(x) - 70 + 14 * Math.sin(x * 0.021 + 1.1) + 7 * Math.sin(x * 0.063); }
 function bForestY(x) { return 150 + 10 * Math.sin(x * 0.021) + 5 * Math.sin(x * 0.07 + 1.0); }
@@ -383,6 +385,21 @@ function beachProps(add) {
   add({ spr: 'rock', x: 138, y: 222, col: { dx: -8, dy: -5, w: 16, h: 5 } });
   add({ spr: 'deadTree', x: 182, y: 200, dead: true, col: { dx: -7, dy: -5, w: 14, h: 5 } });
   add({ spr: 'deadTree', x: 168, y: 196, dead: true, col: { dx: -7, dy: -5, w: 14, h: 5 }, flip: true });
+
+  // ---------- safety pass: the shoreline is a sine wave, so fixed-y props can
+  // end up in the water (that is how the ship's bell once drowned). Lift any
+  // prop that matters back onto the wet-sand line.
+}
+function beachPropsDewater(props) {
+  for (const p of props) {
+    if (p.flat && !p.interact) continue;        // decoration may sit anywhere
+    let guard = 0;
+    while (guard++ < 90) {
+      const id = bTerrainId(p.x, p.y + 3);
+      if (id !== 0 && id !== 1) break;          // 0 deep water / 1 shallow
+      p.y -= 2;
+    }
+  }
 }
 
 /* ====================================================== THE JUNGLE TRAIL == */
@@ -650,8 +667,8 @@ const Areas = {
     music: null,
     ambience: { ocean: 0.2, wind: 0.012, rain: 0, hum: 0.03, hearth: 0 },
     encounters: { rects: [{ x: 420, y: 230, w: 284, h: 160 }], rate: 10, chance: 0.055, pool: ['crabApple'] },
-    spawn: { x: 240, y: 396, dir: 'down' },
-    build(area) { buildBeachTerrain(area); area.props = []; const add = (p) => { area.props.push(p); return p; }; beachProps(add); area.npcs = [NpcDefs.vax()]; },
+    spawn: BEACH_SPAWN,
+    build(area) { buildBeachTerrain(area); area.props = []; const add = (p) => { area.props.push(p); return p; }; beachProps(add); beachPropsDewater(area.props); area.npcs = [NpcDefs.vax()]; },
     exits: [
       { x: 686, y: 300, w: 18, h: 76, to: 'trail', tx: 244, ty: 520, dir: 'up' }
     ],
@@ -731,6 +748,12 @@ const World = {
     this.rebuildCollision();
     Player.x = px; Player.y = py; Player.dir = dir || 'down';
     Player.moving = false;
+    // never let a load leave the player inside a solid (bad spawn, old save,
+    // future area bug): walk them up/out until they stand on clear ground
+    for (let i = 0; i < 90 && blockedAt(Player.x, Player.y); i++) {
+      Player.y -= 2;
+      if (i % 6 === 5) Player.x += (Math.floor(i / 6) % 2 === 0) ? 3 : -3;
+    }
     // ambience + music + first-visit hooks
     AudioSys.setMix(def.ambience, 0.5);
     if (def.music) AudioSys.playSong(def.music); else AudioSys.stopSong();

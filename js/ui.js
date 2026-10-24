@@ -32,18 +32,32 @@ function drawObjectivePanel(ctx, t) {
   drawText(ctx, text, x + 14, y + 6, flash > 0 ? '#fff4d2' : '#eae3d2');
 }
 
+// layout is a pure function so the harness can verify the text never leaves
+// the panel (it used to overhang the right edge by several pixels)
+function hpBarLayout() {
+  const x = 8, y = 29, w = 96;                 // w = red bar width
+  const label = 'HP ' + Math.max(0, Game.hp) + '/' + Game.maxhp;
+  const icon = 15;                              // flame icon + gap
+  const gap = 5;                                // bar -> text gap
+  const pad = 7;                                // right padding inside panel
+  const tw = textWidth(label);
+  return {
+    x, y, barW: w, label,
+    textX: x + icon + w + gap,
+    panelW: icon + w + gap + tw + pad
+  };
+}
 function drawHpBar(ctx) {
-  const x = 8, y = 29;
-  const w = 96;
-  drawPanel(ctx, x, y, w + textWidth('HP 20/20') + 12, 15, 0.92);
+  const L = hpBarLayout();
+  drawPanel(ctx, L.x, L.y, L.panelW, 15, 0.92);
   // little lantern flame icon
-  ctx.drawImage(SPR[Math.floor(Game.time * 6) % 2 === 0 ? 'soul0' : 'soul1'], x + 4, y + 4);
+  ctx.drawImage(SPR[Math.floor(Game.time * 6) % 2 === 0 ? 'soul0' : 'soul1'], L.x + 4, L.y + 4);
   ctx.fillStyle = '#4a1d20';
-  ctx.fillRect(x + 15, y + 5, w, 6);
+  ctx.fillRect(L.x + 15, L.y + 5, L.barW, 6);
   const frac = clamp(Game.hp / Game.maxhp, 0, 1);
   ctx.fillStyle = frac > 0.5 ? '#e8cf6a' : frac > 0.25 ? '#e0a23b' : '#d8452e';
-  ctx.fillRect(x + 15, y + 5, Math.round(w * frac), 6);
-  drawText(ctx, 'HP ' + Math.max(0, Game.hp) + '/' + Game.maxhp, x + 15 + w + 5, y + 5, '#eae3d2');
+  ctx.fillRect(L.x + 15, L.y + 5, Math.round(L.barW * frac), 6);
+  drawText(ctx, L.label, L.textX, L.y + 4, '#eae3d2');
 }
 
 function drawAreaName(ctx) {
@@ -449,18 +463,322 @@ function drawTitle(ctx, t) {
 /* ================================================ INTRO PANEL SEQUENCE */
 /* Undertale-style: near-black, slow typewriter, one thought per panel.
    Advance with Z / Enter / E / Space / click. ESC skips the whole intro. */
+/* ==========================================================================
+   THE INTRO — "The Sailor and the Storm"
+   Ten quiet panels + a title card. Every scene is painted with fillRect only
+   (identical rendering in browser and in the test harness rasterizer):
+   stars, moon, layered sea, a rocking ship silhouette, jagged lightning
+   with glow, rain, drifting debris, a beach dawn, and a wrong little island.
+   Panels advance on Z/E/Enter/Space/click, or on their own after `hold`
+   seconds once the text finishes (the title card always waits for input).
+   ========================================================================== */
 const INTRO_PANELS = [
-  { lines: ['Every sailor knows the story of', 'THE FORGE.'], music: 'title' },
-  { lines: ['The place where broken things', 'are made whole.', 'Where what was lost can be rebuilt.'] },
-  { lines: ['The Sailor had chased that story', 'across nine seas.', 'The compass always pointed further.'] },
-  { lines: ['Then, one night \u2014', 'the storm.'], storm: true },
-  { lines: ['It did not behave like weather.', 'It behaved like a hand.'], storm: true, darker: true },
-  { lines: ['The ship came apart.', 'The sea took the rest.'], storm: true, crash: true, darker: true },
-  { lines: ['Cold.', 'Sand.', 'Gulls.', 'Morning.'] },
-  { lines: ['An island not on any chart.', 'Fruit-heavy. Bright-eyed.'], beat: 0.7 },
-  { lines: ['Wrong.'], darker: true, slow: true },
-  { lines: ['FRUITS ISLAND'], title: true }
+  { scene: 'calm',    lines: ['The Marigold had one job:', 'sail past the edge of the map.'], hold: 3.6 },
+  { scene: 'compass', lines: ['Find The Forge, they said.', 'It would be easy, they said.'], hold: 3.4 },
+  { scene: 'clouds',  lines: ['Around midnight,', 'the sky changed its mind.'], hold: 3.2 },
+  { scene: 'storm',   lines: ['The storm did not arrive.', 'It was waiting.'], storm: true, hold: 3.6 },
+  { scene: 'storm',   lines: ['The Marigold fought', 'until it couldn\u2019t.'], storm: true, broken: true, crash: true, hold: 4.0 },
+  { scene: 'wrecksea', lines: ['By dawn, the sea had taken the ship,'], grey: true, hold: 3.4 },
+  { scene: 'wrecksea', lines: ['and everything on it.', 'Everything but him.'], grey: true, darker: true, slow: true, hold: 4.2 },
+  { scene: 'beach',   lines: ['He woke to sand, and gulls,', 'and a headache the size of the horizon.'], hold: 4.0 },
+  { scene: 'island',  lines: ['An island not on any chart.', 'Fruit-heavy. Bright-eyed.'], hold: 3.6 },
+  { scene: 'island',  lines: ['Wrong.'], darker: true, slow: true, hold: 2.4 },
+  { scene: 'title',   lines: ['FRUITS ISLAND'], title: true }
 ];
+
+/* ------------------------------------------------------ scene painters */
+function introStars(ctx, t, dim) {
+  for (let i = 0; i < 26; i++) {
+    const sx = Math.floor(hash2(i, 11) * (VW - 8)) + 4;
+    const sy = Math.floor(hash2(i, 23) * 120) + 4;
+    const tw = 0.35 + 0.65 * Math.abs(Math.sin(t * (0.4 + hash2(i, 5) * 0.8) + i));
+    ctx.fillStyle = 'rgba(214,228,240,' + (tw * dim).toFixed(3) + ')';
+    ctx.fillRect(sx, sy, 1, 1);
+    if (hash2(i, 31) > 0.8 && tw > 0.8) { ctx.fillRect(sx - 1, sy, 1, 1); ctx.fillRect(sx + 1, sy, 1, 1); ctx.fillRect(sx, sy - 1, 1, 1); ctx.fillRect(sx, sy + 1, 1, 1); }
+  }
+}
+function introMoon(ctx, mx, my, dim, cover) {
+  // halo
+  ctx.fillStyle = 'rgba(208,222,232,' + (0.05 * dim * (1 - cover)).toFixed(3) + ')';
+  ctx.fillRect(mx - 9, my - 9, 20, 20);
+  ctx.fillStyle = 'rgba(208,222,232,' + (0.09 * dim * (1 - cover)).toFixed(3) + ')';
+  ctx.fillRect(mx - 6, my - 6, 14, 14);
+  // pixel moon (a 7-row disc)
+  const rows = [3, 5, 7, 7, 7, 5, 3];
+  ctx.fillStyle = 'rgba(226,234,238,' + (dim * (1 - cover)).toFixed(3) + ')';
+  for (let r = 0; r < rows.length; r++) ctx.fillRect(mx - Math.floor(rows[r] / 2), my - 3 + r, rows[r], 1);
+  ctx.fillStyle = 'rgba(150,168,178,' + (0.5 * dim * (1 - cover)).toFixed(3) + ')';
+  ctx.fillRect(mx, my - 1, 2, 1); ctx.fillRect(mx - 2, my + 1, 2, 1);   // craters
+}
+function introSea(ctx, t, rough, grey) {
+  const H0 = 150;
+  for (let y = H0; y < VH; y++) {
+    const d = (y - H0) / (VH - H0);
+    let r, g, b;
+    if (grey) {
+      r = 26 + d * 26; g = 34 + d * 30; b = 42 + d * 32;
+    } else {
+      r = 10 + d * 16; g = 22 + d * 30; b = 40 + d * 40;
+    }
+    const amp = rough ? 5 : 2;
+    const off = Math.round(Math.sin(t * (rough ? 2.6 : 1.1) + y * 0.35) * amp * (0.4 + d));
+    ctx.fillStyle = 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+    ctx.fillRect(-14 + off, y, VW + 28, 1);
+    // moon glitter lane + foam crests
+    if (y < H0 + 14 && hash2(y, Math.floor(t * 3)) > (rough ? 0.55 : 0.8)) {
+      const fx = 150 + Math.round(Math.sin(t * 1.7 + y) * 30) + Math.floor(hash2(y, 7) * 60);
+      ctx.fillStyle = rough ? 'rgba(196,212,224,0.35)' : 'rgba(168,196,214,0.28)';
+      ctx.fillRect(fx, y, 2 + Math.floor(hash2(y, 9) * 3), 1);
+    }
+  }
+  if (rough) {
+    // whitecaps: broken dashes riding the swell
+    for (let i = 0; i < 12; i++) {
+      const wy = H0 + 6 + Math.floor(hash2(i, 41) * 54);
+      const wx = Math.floor((hash2(i, 43) * VW + t * 26 * (0.5 + hash2(i, 45))) % (VW + 30)) - 15;
+      ctx.fillStyle = 'rgba(210,224,232,' + (0.25 + hash2(i, 47) * 0.3).toFixed(2) + ')';
+      ctx.fillRect(wx, wy, 3 + Math.floor(hash2(i, 49) * 4), 1);
+    }
+  }
+}
+function introShip(ctx, cx, cy, t, rough, broken) {
+  // a small silhouetted brig, sheared row-by-row so it rolls with the swell
+  const roll = Math.sin(t * (rough ? 2.2 : 0.9)) * (rough ? 4 : 1.6);
+  const bob = Math.round(Math.sin(t * (rough ? 1.8 : 0.7)) * (rough ? 2 : 1));
+  const y0 = cy + bob;
+  const row = (ry, w, color) => {
+    const shift = Math.round(roll * ((ry - 3) / 4));
+    ctx.fillStyle = color;
+    ctx.fillRect(cx - Math.floor(w / 2) + shift, y0 + ry, w, 1);
+  };
+  // hull
+  const hull = '#0a0f16';
+  row(0, 24, hull); row(1, 26, hull); row(2, 26, hull); row(3, 24, hull); row(4, 20, hull); row(5, 14, hull);
+  // deck line
+  ctx.fillStyle = '#1b2634';
+  ctx.fillRect(cx - 11 + Math.round(roll * -0.75), y0 + 1, 22, 1);
+  // mast (+ sail, or the stump of one)
+  const mastH = broken ? 7 : 16;
+  ctx.fillStyle = hull;
+  ctx.fillRect(cx - 1 + Math.round(roll * -0.4), y0 - mastH, 2, mastH);
+  if (!broken) {
+    // sail: a pale triangle, bellying with the wind
+    for (let r = 0; r < 9; r++) {
+      const w = 2 + Math.round(r * 1.3);
+      ctx.fillStyle = 'rgba(158,172,184,0.85)';
+      ctx.fillRect(cx + 1 + Math.round(roll * (-0.4 + r * 0.06)), y0 - 15 + r, w, 1);
+    }
+    // tiny stern lantern
+    ctx.fillStyle = 'rgba(232,196,106,0.9)';
+    ctx.fillRect(cx + 12 + Math.round(roll * 1), y0 - 1, 1, 1);
+  } else {
+    // torn sail scrap flapping
+    for (let r = 0; r < 4; r++) {
+      ctx.fillStyle = 'rgba(120,132,142,0.7)';
+      ctx.fillRect(cx + 1 + Math.round(Math.sin(t * 6 + r) * 2), y0 - 6 + r, 3 - (r > 1 ? 1 : 0), 1);
+    }
+    ctx.fillStyle = 'rgba(232,196,106,0.5)';
+    ctx.fillRect(cx + 12 + Math.round(roll), y0 - 1, 1, 1);
+  }
+}
+function introClouds(ctx, t, cover) {
+  // long low banks sliding across; `cover` 0..1 hides the moon and stars
+  const banks = [
+    [0.1, 30, 90, 12, 0.55], [0.5, 52, 120, 14, 0.4], [0.8, 20, 80, 10, 0.5], [0.3, 70, 140, 16, 0.3]
+  ];
+  for (let i = 0; i < banks.length; i++) {
+    const b = banks[i];
+    const x = ((b[0] * (VW + 260) + t * (6 + i * 4)) % (VW + 260)) - 130;
+    ctx.fillStyle = 'rgba(16,22,32,' + (b[4] * cover).toFixed(3) + ')';
+    ctx.fillRect(Math.round(x), b[1], b[2], b[3]);
+    ctx.fillStyle = 'rgba(24,32,44,' + (b[4] * cover * 0.8).toFixed(3) + ')';
+    ctx.fillRect(Math.round(x + 14), b[1] - 5, b[2] - 30, 6);
+    ctx.fillRect(Math.round(x + 30), b[1] + b[3], b[2] - 60, 4);
+  }
+}
+function introRain(ctx, t, n) {
+  ctx.fillStyle = 'rgba(150,178,196,0.30)';
+  for (let i = 0; i < n; i++) {
+    const h = hash2(i, 77);
+    const spd = 200 + h * 160;
+    const ry = ((t * spd + h * 500) % (VH + 40)) - 20;
+    const rx = ((h * (VW + 120) + t * 46) % (VW + 120)) - 60;
+    ctx.fillRect(Math.round(rx), Math.round(ry), 1, 4 + Math.floor(h * 4));
+  }
+}
+function introLightning(ctx, I, t) {
+  if (I.flashT <= 0) return;
+  // sky flash (decays with flashT)
+  const a = clamp(I.flashT * 0.55, 0, 0.7);
+  ctx.fillStyle = 'rgba(205,222,238,' + a.toFixed(3) + ')';
+  ctx.fillRect(0, 0, VW, 152);
+  // the bolt itself is only visible in the first instant
+  if (I.flashT < 0.30) return;
+  const seed = I.boltSeed;
+  let bx = 60 + Math.floor(hash2(seed, 1) * (VW - 120));
+  let by = 0;
+  const pts = [[bx, by]];
+  for (let i = 0; i < 7; i++) {
+    bx += Math.round((hash2(seed, i + 2) - 0.5) * 44);
+    by += Math.round(18 + hash2(seed, i + 20) * 10);
+    pts.push([bx, by]);
+  }
+  const draw = (w, color, alpha) => {
+    ctx.fillStyle = color;
+    ctx.globalAlpha = alpha;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+      const steps = Math.max(1, Math.abs(y1 - y0));
+      for (let k = 0; k <= steps; k++) {
+        const px = x0 + (x1 - x0) * k / steps;
+        const py = y0 + (y1 - y0) * k / steps;
+        ctx.fillRect(Math.round(px) - (w >> 1), Math.round(py), w, 1);
+      }
+    }
+    ctx.globalAlpha = 1;
+  };
+  draw(3, '#7fa2c4', 0.4);       // glow
+  draw(1, '#eef4fb', 0.95);      // core
+  // a short fork
+  ctx.fillStyle = '#dce8f4';
+  const f = pts[3];
+  ctx.fillRect(f[0], f[1], 1, 8); ctx.fillRect(f[0] + 1, f[1] + 8, 1, 5);
+}
+function introDebris(ctx, t) {
+  for (let i = 0; i < 5; i++) {
+    const hx = hash2(i, 61), hw = 8 + Math.floor(hash2(i, 63) * 14);
+    const x = Math.floor(hx * (VW - 60)) + 20;
+    const y = 158 + Math.floor(hash2(i, 65) * 40) + Math.round(Math.sin(t * 1.2 + i * 2) * 2);
+    ctx.fillStyle = 'rgba(18,24,32,0.9)';
+    ctx.fillRect(x, y, hw, 2);
+    ctx.fillStyle = 'rgba(40,52,64,0.8)';
+    ctx.fillRect(x + 2, y - 1, hw - 5, 1);
+  }
+}
+function introBeachDawn(ctx, t) {
+  // dawn sky bands
+  for (let y = 0; y < 150; y++) {
+    const d = y / 150;
+    const r = 42 + d * 60, g = 38 + d * 34, b = 52 + d * 22;
+    ctx.fillStyle = 'rgb(' + (r | 0) + ',' + (g | 0) + ',' + (b | 0) + ')';
+    ctx.fillRect(0, y, VW, 1);
+  }
+  // sun haze on the horizon
+  ctx.fillStyle = 'rgba(224,162,107,0.30)';
+  ctx.fillRect(0, 138, VW, 12);
+  ctx.fillStyle = 'rgba(236,182,124,0.5)';
+  ctx.fillRect(VW / 2 - 30, 142, 60, 3);
+  // sea
+  for (let y = 150; y < 176; y++) {
+    const d = (y - 150) / 26;
+    ctx.fillStyle = 'rgb(' + ((30 + d * 24) | 0) + ',' + ((34 + d * 22) | 0) + ',' + ((48 + d * 26) | 0) + ')';
+    ctx.fillRect(0, y, VW, 1);
+  }
+  // sand
+  for (let y = 176; y < VH; y++) {
+    const d = (y - 176) / (VH - 176);
+    ctx.fillStyle = 'rgb(' + ((96 + d * 40) | 0) + ',' + ((80 + d * 32) | 0) + ',' + ((62 + d * 24) | 0) + ')';
+    ctx.fillRect(0, y, VW, 1);
+  }
+  // wet shine + foam edge
+  ctx.fillStyle = 'rgba(180,196,204,0.22)';
+  for (let x = 0; x < VW; x += 3) ctx.fillRect(x + Math.round(Math.sin(t + x) * 2), 178, 2, 1);
+  // palm silhouettes
+  const palm = (px, py, s) => {
+    ctx.fillStyle = '#100c12';
+    ctx.fillRect(px, py - 26 * s, 2 * s, 26 * s);
+    for (let f = 0; f < 5; f++) {
+      const fa = -0.5 + f * 0.5;
+      ctx.fillRect(px + (fa < 0 ? -1 : 1) * s, py - 28 * s + Math.round(f * 1.5), Math.round((6 + f * 2) * s) * (fa < 0 ? -1 : 1) + (fa < 0 ? 2 * s : 0), 2 * s);
+    }
+  };
+  palm(36, 190, 1); palm(352, 186, 1.4); palm(316, 188, 0.8);
+  // the sailor, face down where the tide left him
+  ctx.fillStyle = '#141821';
+  ctx.fillRect(196, 190, 14, 3);
+  ctx.fillRect(192, 190, 5, 2);          // head
+  ctx.fillRect(206, 189, 6, 1);          // an arm thrown out
+  ctx.fillStyle = 'rgba(20,24,33,0.5)';
+  ctx.fillRect(194, 193, 16, 2);
+  // gulls
+  for (let i = 0; i < 3; i++) {
+    const gx = ((t * (14 + i * 5) + i * 120) % (VW + 40)) - 20;
+    const gy = 58 + i * 14 + Math.round(Math.sin(t * 2 + i * 2) * 4);
+    const flap = Math.sin(t * 6 + i * 1.7) > 0 ? 1 : 2;
+    ctx.fillStyle = 'rgba(226,232,236,0.75)';
+    ctx.fillRect(gx, gy, 2, 1);
+    ctx.fillRect(gx - 2, gy - flap, 2, 1);
+    ctx.fillRect(gx + 2, gy - flap, 2, 1);
+  }
+}
+function introIsland(ctx, t, lightsOn) {
+  // sea + sky, then the island: a low dark mass with palms and tiny lights
+  introSea(ctx, t * 0.5, false, false);
+  const base = 150;
+  ctx.fillStyle = '#0a0e14';
+  for (let x = 0; x < VW; x++) {
+    const h = Math.round(14 * Math.sin(x * 0.02 + 1.2) + 8 * Math.sin(x * 0.05 + 0.4) + 12);
+    ctx.fillRect(x, base - h, 1, h + 2);
+  }
+  // palm bumps along the ridge
+  for (let i = 0; i < 9; i++) {
+    const px = 24 + i * 40 + Math.floor(hash2(i, 71) * 14);
+    const py = base - Math.round(14 * Math.sin(px * 0.02 + 1.2) + 8 * Math.sin(px * 0.05 + 0.4) + 12);
+    ctx.fillStyle = '#0a0e14';
+    ctx.fillRect(px, py - 6, 1, 6);
+    ctx.fillRect(px - 2, py - 7, 2, 1); ctx.fillRect(px + 1, py - 7, 2, 1);
+  }
+  // village lights: warm dots that breathe... in unison (that's the wrong part)
+  if (lightsOn) {
+    for (let i = 0; i < 6; i++) {
+      const lx = 60 + i * 52 + Math.floor(hash2(i, 81) * 16);
+      const ly = base - 4 - Math.floor(hash2(i, 83) * 5);
+      const breath = 0.55 + 0.45 * Math.sin(t * 0.8 + i * 0.13);
+      const sync = Math.sin(t * 0.8) > -0.2 ? breath : 0.12;  // they all dim together
+      ctx.fillStyle = 'rgba(236,196,120,' + sync.toFixed(2) + ')';
+      ctx.fillRect(lx, ly, 1, 1);
+      ctx.fillStyle = 'rgba(236,196,120,' + (sync * 0.25).toFixed(2) + ')';
+      ctx.fillRect(lx - 1, ly - 1, 3, 3);
+    }
+  }
+}
+function introCompass(ctx, t) {
+  // a big brass compass rose; the needle refuses to settle
+  const cx = VW / 2, cy = 86;
+  ctx.fillStyle = '#0d1119';
+  for (let r = 0; r < 30; r++) {
+    const w = Math.round(2 * Math.sqrt(30 * 30 - r * r));
+    ctx.fillRect(cx - w, cy - 30 + r, w * 2, 1);
+    ctx.fillRect(cx - w, cy + 30 - r, w * 2, 1);
+  }
+  ctx.fillStyle = '#232c3a';
+  for (let r = 4; r < 27; r += 3) {
+    const w = Math.round(2 * Math.sqrt(30 * 30 - r * r));
+    ctx.fillRect(cx - w, cy - 30 + r, w * 2, 1);
+    ctx.fillRect(cx - w, cy + 30 - r, w * 2, 1);
+  }
+  // rose points
+  ctx.fillStyle = '#3c4a5c';
+  for (let i = 0; i < 4; i++) {
+    const dx = i === 0 ? 1 : i === 2 ? -1 : 0, dy = i === 1 ? 1 : i === 3 ? -1 : 0;
+    for (let k = 4; k < 22; k++) {
+      const w = Math.max(1, Math.round((22 - k) * 0.5));
+      ctx.fillRect(cx + dx * k - (dy ? w / 2 : 0), cy + dy * k - (dx ? w / 2 : 0), dy ? w : 1, dx ? w : 1);
+    }
+  }
+  // the needle: swings, never commits (it should point north; it points at him)
+  const ang = -0.9 + Math.sin(t * 0.7) * 0.8 + Math.sin(t * 1.9) * 0.12;
+  const nx = Math.cos(ang), ny = Math.sin(ang);
+  for (let k = 0; k < 18; k++) {
+    ctx.fillStyle = k < 9 ? '#c85a50' : '#93a3b3';
+    ctx.fillRect(Math.round(cx + nx * (k - 9)) - 1, Math.round(cy + ny * (k - 9)) - 1, 2, 2);
+  }
+  ctx.fillStyle = '#e8cf6a';
+  ctx.fillRect(cx - 1, cy - 1, 3, 3);
+  // glass glint
+  ctx.fillStyle = 'rgba(210,228,238,0.10)';
+  ctx.fillRect(cx - 18, cy - 24, 10, 26);
+}
 
 const Intro = {
   idx: 0,
@@ -469,13 +787,16 @@ const Intro = {
   holdT: 0,
   doneHold: false,
   flashT: 0,
+  boltSeed: 1,
+  nextStrike: 0,
   finished: false,
 
   begin() {
     this.idx = 0; this.chars = 0; this.t = 0; this.holdT = 0;
-    this.doneHold = false; this.finished = false; this.flashT = 0;
-    AudioSys.playSong('title');
-    AudioSys.setMix({ ocean: 0.02, wind: 0.006, rain: 0, hum: 0.05 }, 0.4);
+    this.doneHold = false; this.finished = false;
+    this.flashT = 0; this.boltSeed = 1; this.nextStrike = 2.2;
+    AudioSys.restartSong('title');
+    AudioSys.setMix({ ocean: 0.045, wind: 0.014, rain: 0, hum: 0.03 }, 0.4);
   },
   panel() { return INTRO_PANELS[this.idx]; },
   fullText() { return this.panel().lines.join('\n'); },
@@ -496,14 +817,26 @@ const Intro = {
     if (this.idx >= INTRO_PANELS.length) {
       this.finished = true;
       Game.introDone();
-    } else {
-      const p = this.panel();
-      if (p.crash) { AudioSys.crash(); this.flashT = 0.5; }
-      else if (p.storm && this.idx === 3) { AudioSys.thunder(); this.flashT = 0.4; }
-      if (p.title) { AudioSys.stopSong(); AudioSys.setMix({ hum: 0.08 }, 0.3); }
+      return;
     }
+    this.enterPanel(this.panel());
   },
-
+  enterPanel(p) {
+    if (p.crash) { AudioSys.crash(); this.flashT = 0.6; this.boltSeed = (Math.random() * 999) | 0; }
+    else if (p.storm) { this.strike(); }
+    if (p.scene === 'clouds') AudioSys.setMix({ ocean: 0.05, wind: 0.024, rain: 0.012, hum: 0.02 }, 0.8);
+    if (p.scene === 'storm') AudioSys.setMix({ ocean: 0.06, wind: 0.03, rain: 0.05, hum: 0.012 }, 0.8);
+    if (p.grey) { AudioSys.stopSong(); AudioSys.setMix({ ocean: 0.035, wind: 0.012, rain: 0.014, hum: 0.016 }, 1.2); }
+    if (p.scene === 'beach') { AudioSys.setMix({ ocean: 0.055, wind: 0.01, rain: 0, hum: 0.014 }, 1.0); AudioSys.bird(); }
+    if (p.scene === 'island' && !p.darker) AudioSys.setMix({ ocean: 0.02, wind: 0.006, rain: 0, hum: 0.05 }, 1.0);
+    if (p.scene === 'island' && p.darker) { AudioSys.moan(); AudioSys.setMix({ hum: 0.065 }, 1.4); }
+    if (p.title) { AudioSys.stopSong(); AudioSys.setMix({ hum: 0.08 }, 0.3); }
+  },
+  strike() {
+    this.flashT = 0.5;
+    this.boltSeed = (Math.random() * 999) | 0;
+    AudioSys.thunder();
+  },
   skip() {
     this.idx = INTRO_PANELS.length;
     this.finished = true;
@@ -515,6 +848,16 @@ const Intro = {
     if (this.flashT > 0) this.flashT -= dt;
     const p = this.panel();
     if (!p) return;
+    // rolling lightning inside storm panels
+    if (p.storm) {
+      this.nextStrike -= dt;
+      if (this.nextStrike <= 0) {
+        this.strike();
+        this.nextStrike = 1.6 + Math.random() * 1.9;
+      }
+    }
+    // a gull cries now and then on the beach panel
+    if (p.scene === 'beach' && Math.random() < dt * 0.25) AudioSys.bird();
     const total = this.totalChars();
     if (this.chars < total) {
       const cps = p.slow ? 14 : p.title ? 10 : 30;
@@ -524,6 +867,8 @@ const Intro = {
       if (this.chars >= total) this.doneHold = true;
     } else {
       this.holdT += dt;
+      // panels breathe forward on their own (the title card waits for you)
+      if (!p.title && this.holdT > (p.hold || 3.4)) this.advance();
     }
   },
 
@@ -537,32 +882,43 @@ const Intro = {
     ctx.fillRect(0, 0, VW, VH);
 
     if (!p) return;
+    const scene = p.scene || 'calm';
 
-    // storm panels: rain + distant lightning
-    if (p.storm) {
-      ctx.fillStyle = 'rgba(140,170,190,0.16)';
-      for (let i = 0; i < 70; i++) {
-        const h = hash2(i, 9);
-        const ry = ((t * (170 + h * 140) + h * 400) % (VH + 30)) - 15;
-        const rx = ((h * (VW + 80) + t * 30) % (VW + 80)) - 40;
-        ctx.fillRect(Math.round(rx), Math.round(ry), 1, 4 + Math.floor(h * 3));
+    if (scene === 'calm' || scene === 'clouds' || scene === 'storm') {
+      const cover = scene === 'calm' ? 0 : scene === 'clouds' ? 0.55 : 1;
+      introStars(ctx, t, scene === 'storm' ? 0.25 : 1 - cover * 0.6);
+      introMoon(ctx, 300, 34, scene === 'storm' ? 0.4 : 1, cover);
+      introClouds(ctx, t, scene === 'clouds' ? 0.8 : scene === 'storm' ? 1.35 : 0.25);
+      introSea(ctx, t, scene === 'storm', p.grey || false);
+      const shipX = scene === 'storm' ? 150 : 210;
+      const shipY = scene === 'storm' ? 148 : 146;
+      introShip(ctx, shipX, shipY, t, scene === 'storm', !!p.broken);
+      if (scene === 'storm') {
+        introRain(ctx, t, 90);
+        introLightning(ctx, this, t);
       }
-      if (Math.sin(t * 0.9 + 2) > 0.985 || this.flashT > 0) {
-        ctx.fillStyle = 'rgba(200,220,240,0.13)';
+      if (this.flashT > 0 && scene !== 'storm') {
+        ctx.fillStyle = 'rgba(205,222,238,' + (clamp(this.flashT * 0.5, 0, 0.6)).toFixed(3) + ')';
         ctx.fillRect(0, 0, VW, VH);
       }
-      // sea swell at the bottom
-      ctx.fillStyle = 'rgba(20,40,60,0.6)';
-      for (let i = 0; i < 30; i++) {
-        const y = VH - 26 + i;
-        const w = 60 + Math.sin(t * 2 + i) * 30;
-        ctx.fillRect(Math.round(VW / 2 - w / 2), y, Math.round(w), 1);
-      }
+    } else if (scene === 'wrecksea') {
+      introStars(ctx, t, 0.5);
+      introSea(ctx, t, false, true);
+      introDebris(ctx, t);
+    } else if (scene === 'beach') {
+      introBeachDawn(ctx, t);
+    } else if (scene === 'island') {
+      introIsland(ctx, t, !p.darker);
+    } else if (scene === 'compass') {
+      introStars(ctx, t, 0.7);
+      introCompass(ctx, t);
+    } else if (scene === 'title') {
+      // the island gone black; just the name
+      introSea(ctx, t * 0.4, false, true);
     }
 
     // text
     const total = this.totalChars();
-    const cps = p.slow ? 14 : p.title ? 10 : 30;
     let shown = Math.floor(this.chars);
     if (p.title) {
       // title card: single big line, gold, centered
@@ -574,7 +930,7 @@ const Intro = {
       for (const o of [[-2, 0], [2, 0], [0, -2], [0, 2]]) drawText(ctx, shownTxt, x + o[0], y + o[1], '#120c04', s);
       drawText(ctx, shownTxt, x, y, '#e8cf92', s);
       if (shown >= full.length) {
-        const sub = 'Chapter One';
+        const sub = 'Chapter One \u2014 The First Slice';
         drawText(ctx, sub, Math.round((VW - textWidth(sub)) / 2), y + 34, '#6f7d86');
       }
     } else {
@@ -590,9 +946,13 @@ const Intro = {
     }
 
     // advance hint (after the line finishes)
-    if (this.chars >= total && Math.floor(t * 1.8) % 2 === 0) {
+    if (this.chars >= total && Math.floor(t * 1.8) % 2 === 0 && !p.title) {
       const hint = '\u00b7 press Z or E \u00b7';
       drawText(ctx, hint, Math.round((VW - textWidth(hint)) / 2), VH - 22, 'rgba(160,178,178,0.6)');
+    }
+    if (p.title && this.chars >= total && Math.floor(t * 1.8) % 2 === 0) {
+      const hint = '\u00b7 press Z or E to go ashore \u00b7';
+      drawText(ctx, hint, Math.round((VW - textWidth(hint)) / 2), VH - 22, 'rgba(190,178,140,0.75)');
     }
     if (this.idx > 0 || this.chars > 0) {
       // a tiny progress marker of dots

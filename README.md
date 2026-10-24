@@ -6,8 +6,13 @@ dependencies, fully offline.
 
 ## Run it
 
-Open `index.html` in any modern desktop browser (Chrome / Firefox / Edge /
-Safari). That's it — no build step, no server, no internet after load.
+**Easiest:** open **`fruits-island.html`** — the whole game in one
+self-contained file (works straight from your Downloads folder, no server,
+no internet). This is the file distributed in the release package.
+
+Or open `index.html` (modular version, loads the `js/` folder — keep them
+together). Rebuild the single file any time with
+`node tools/build_single.mjs`.
 
 - **Move** — Arrow keys / WASD
 - **Confirm / talk / examine** — Z / E / Enter / Space (or click)

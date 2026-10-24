@@ -1,5 +1,51 @@
 # Changelog — Fruits Island: Chapter One ("The First Slice")
 
+## v1.1 — "It actually plays" (bug-fix release)
+
+Critical fixes after extensive playtesting of v1.0:
+
+- **Player could not move (moonwalk bug)** — the beach spawn sat in shallow
+  water, which is solid collision; the animation played but every step was
+  blocked, forever. Fixed three ways: the spawn is now on dry sand
+  (`BEACH_SPAWN`), `World.load` walks any badly-placed load position out of
+  solids (also rescues saves made in v1.0), and `Player.update` now allows
+  movement *out* of a solid if you somehow stand in one. Movement verified by
+  a real-player harness test that walks from the actual spawn with no
+  teleports.
+- **Ship's bell & Memory Lantern were unreachable** — both sat in *deep*
+  water because the shoreline is a sine wave and the props used fixed y
+  coordinates. A de-watering pass now lifts every meaningful beach prop to
+  the wet-sand line at build time.
+- **Audio was unreliable / silent** — the AudioContext was only resumed on
+  mouse clicks, but the game is keyboard-driven, so browsers kept it
+  suspended (title silent, intro silent, "sometimes works after restart").
+  Now *every* first gesture (key press included) calls `AudioSys.unlock()`,
+  which also re-primes the music scheduler so songs never burst after a
+  suspend/resume. Master/music/SFX/ambience levels roughly doubled (they
+  were authored far too quiet). Tab-visible re-unlocks too.
+- **Intro felt empty** — rebuilt as ten composed scenes + title card:
+  starfield, pixel moon with halo, drifting cloud banks, layered sea with
+  moon-glitter and whitecaps, a rocking ship silhouette that breaks apart,
+  jagged glow lightning with screen flash and rolling thunder, floating
+  debris, a beach dawn with gulls, and a wrong little island whose lights
+  breathe in unison. Panels auto-advance after a hold (title card waits),
+  Z/E/click still advance, ESC skips.
+- **HP bar text overhung its panel** — layout is now a pure function
+  (`hpBarLayout`) with proper right padding; the harness asserts the text
+  ends inside the panel.
+- **Restart state hygiene** — `Game.reset()` now also clears battle state,
+  dialogue, fades, menus, input keys and objective flash, so Restart /
+  Title / New Game always return to a clean, fully playable state (covered
+  by a restart-cycle test that also walks after every reset).
+- Resize handling hardened (orientation change, late layout).
+
+Harness grew from 116 to **150 assertions** (autoplay-policy simulation with
+a suspended-until-gesture AudioContext, real keyboard events through the
+actual listeners, spawn-walking, prop reachability, HP layout, restart
+cycle), plus a smoke test that boots the shipped single-file build.
+
+## v1.0 — first complete build
+
 This build replaces the uploaded GameMaker-era HTML prototype with a complete,
 original chapter-1 vertical slice. Everything is regenerated from scratch:
 art (procedural pixel strings + Canvas painters), audio (procedural WebAudio),

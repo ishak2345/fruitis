@@ -124,6 +124,15 @@ you add art, run the harness — it catches typos the browser silently ignores.
 - `hash2` is a proper 32-bit `Math.imul` mix — the float-multiply version was
   biased and flattened all grid terrain (found via harness color counts).
 
+## 4b. Spawn & collision safety
+
+The shoreline is generated from sine curves, so nothing on the beach may use
+a fixed y coordinate. `beachPropsDewater()` lifts any interactive/colliding
+prop onto the wet-sand line at build time. `World.load` walks a loaded
+position out of solids, and `Player.update` permits movement *out* of a
+solid (stuck = allowed to escape). Between the three, a bad spawn, an old
+save, or a future area bug can no longer freeze the player.
+
 ## 5. Inventory
 
 - `ITEMS` db entries: `{ id, name, cat: 'consumable'|'key'|'equip', desc,
@@ -204,7 +213,12 @@ auto inner-monologue → objective `explore`. Adding a panel = one array entry.
 
 ## 11. Audio
 
-`AudioSys` synthesizes everything: footsteps (surface-tuned noise bursts),
+`AudioSys` synthesizes everything and must survive browser autoplay policy:
+the context is created at boot but **suspended** until the first user
+gesture. `AudioSys.unlock()` is wired to keydown, pointerdown and
+tab-visible; it resumes the context and re-primes the music scheduler
+(`seq.nextT`) so a song never tries to "catch up" after a suspend.
+Footsteps (surface-tuned noise bursts),
 UI blips, dialogue type/advance, item/heal/save stings, battle start/hits/
 hurt/spare/victory/defeat/flee, ambient layers (ocean, wind, rain, hum,
 hearth — mixed per-area via `setMix`), and three songs (title, village,
